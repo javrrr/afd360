@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# afd360 working state — keep state/<org>.json but ignore local overrides
+.afd360/plan.json
+.afd360/metadata-deploy/
+.afd360/state/*.local.json
