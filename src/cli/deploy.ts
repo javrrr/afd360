@@ -11,7 +11,7 @@ import {
 } from "../core/state.js";
 import { topologicalSort } from "../core/graph.js";
 import { isResourceConstruct } from "../core/app.js";
-import type { ResourceConstruct } from "../core/app.js";
+import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
 import {
   computeOp,
@@ -19,10 +19,7 @@ import {
   type Op,
   type OpKind,
 } from "./ops.js";
-import {
-  ConnectionSchemaResource,
-  waitForSchemaReady,
-} from "../resources/connection-schema.js";
+import { pollUntil } from "../core/poll.js";
 
 const DEFAULT_CONFIG = "afd360.config.ts";
 
@@ -55,35 +52,56 @@ export function registerDeploy(program: Command): void {
         ),
       });
       const byId = new Map(resources.map((r) => [r.uniqueId, r]));
-      const deployedIds = new Map<string, string>(
+      const deployed = new Map<string, DeployedRef>(
         Object.entries(state.resources)
           .filter(([, v]) => v.salesforceId)
-          .map(([k, v]) => [k, v.salesforceId!]),
+          .map(([k, v]) => [
+            k,
+            { salesforceId: v.salesforceId!, apiName: v.apiName },
+          ]),
       );
 
       process.stdout.write(`${pc.bold("deploy")} ${orgAlias} (${stack.id})\n`);
 
+      // Op computation must happen incrementally as we walk the topological
+      // order — each resource's computeOp depends on the (up-to-date) deployed
+      // map, which only gains parent entries once those parents finish.
+      // Planning up-front would freeze an out-of-date deployed view for
+      // second-and-later resources, turning their potential `adopt` into
+      // a stale `create` (and running a redundant API write).
       const ops: Op[] = [];
+      let wrote = 0;
       for (const uid of order) {
         const c = byId.get(uid)!;
-        ops.push(await computeOp(ctx, c, state, deployedIds));
-      }
-      process.stdout.write(`  ${summarizeOps(ops)}\n`);
-
-      let wrote = 0;
-      for (const op of ops) {
-        const c = op.construct;
-        const resolved = c.resolveProps ? c.resolveProps(deployedIds) : c.props;
+        const op = await computeOp(ctx, c, state, deployed);
+        ops.push(op);
+        const resolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
+        if (!resolved && op.kind !== "noop") {
+          throw new Error(
+            `Deploy runner invariant broken: ${c.uniqueId} dependencies unresolved before its turn.`,
+          );
+        }
         switch (op.kind) {
           case "noop": {
             process.stdout.write(`  ${pc.gray("noop")}     ${c.uniqueId}\n`);
-            if (op.currentId) deployedIds.set(c.uniqueId, op.currentId);
+            if (op.currentId) {
+              const existing = state.resources[c.uniqueId];
+              deployed.set(c.uniqueId, {
+                salesforceId: op.currentId,
+                apiName: existing?.apiName ?? c.id,
+              });
+            }
             break;
           }
           case "adopt": {
             process.stdout.write(`  ${pc.yellow("adopt")}    ${c.uniqueId}\n`);
-            if (op.currentId) deployedIds.set(c.uniqueId, op.currentId);
-            state.resources[c.uniqueId] = stateEntry(c, op.currentId!, op.plannedHash, state.resources[c.uniqueId]);
+            // For adopt we need the live API name, not the authored one.
+            // The caller already looked it up via lookupByProps — currentId is
+            // the Salesforce id, and apiName comes from re-reading to be safe.
+            const live = await c.resource.read(ctx, op.currentId!);
+            const apiName = apiNameFromOutput(live, c.id);
+            deployed.set(c.uniqueId, { salesforceId: op.currentId!, apiName });
+            state.resources[c.uniqueId] = stateEntry(c, op.currentId!, apiName, op.plannedHash, state.resources[c.uniqueId]);
             wrote += 1;
             break;
           }
@@ -95,8 +113,9 @@ export function registerDeploy(program: Command): void {
             const output = await c.resource.create(ctx, resolved as never);
             await maybeWaitReady(ctx, c, output);
             const id = c.resource.idOf(output);
-            deployedIds.set(c.uniqueId, id);
-            state.resources[c.uniqueId] = stateEntry(c, id, op.plannedHash, state.resources[c.uniqueId]);
+            const apiName = apiNameFromOutput(output, c.id);
+            deployed.set(c.uniqueId, { salesforceId: id, apiName });
+            state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
             wrote += 1;
             break;
           }
@@ -105,8 +124,9 @@ export function registerDeploy(program: Command): void {
             const output = await c.resource.create(ctx, resolved as never);
             await maybeWaitReady(ctx, c, output);
             const id = c.resource.idOf(output);
-            deployedIds.set(c.uniqueId, id);
-            state.resources[c.uniqueId] = stateEntry(c, id, op.plannedHash, state.resources[c.uniqueId]);
+            const apiName = apiNameFromOutput(output, c.id);
+            deployed.set(c.uniqueId, { salesforceId: id, apiName });
+            state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
             wrote += 1;
             break;
           }
@@ -120,7 +140,7 @@ export function registerDeploy(program: Command): void {
       state.lastDeployedAt = new Date().toISOString();
       await writeState(orgAlias, state);
       process.stdout.write(
-        `${pc.bold("done")}  ${wrote} write${wrote === 1 ? "" : "s"}, state saved.\n`,
+        `${pc.bold("done")}  ${summarizeOps(ops)} — ${wrote} write${wrote === 1 ? "" : "s"}; state saved.\n`,
       );
     });
 }
@@ -128,19 +148,34 @@ export function registerDeploy(program: Command): void {
 function stateEntry(
   c: Construct & ResourceConstruct,
   id: string,
+  apiName: string,
   hash: string,
   prev: StateResource | undefined,
 ): StateResource {
   const now = new Date().toISOString();
   const entry: StateResource = {
     type: c.resource.type,
-    apiName: c.id,
+    apiName,
     salesforceId: id,
     hash,
     createdAt: prev?.createdAt ?? now,
   };
   if (prev) entry.updatedAt = now;
   return entry;
+}
+
+/**
+ * Extract the API-assigned dev name from a resource's output. Falls back to
+ * the authored logical id when a resource output doesn't carry a `name` — e.g.
+ * ConnectionSchema's composite id case, where the schemaName IS the name.
+ */
+function apiNameFromOutput(output: unknown, fallback: string): string {
+  if (output && typeof output === "object") {
+    const o = output as { name?: unknown; schemaName?: unknown };
+    if (typeof o.name === "string" && o.name.length > 0) return o.name;
+    if (typeof o.schemaName === "string" && o.schemaName.length > 0) return o.schemaName;
+  }
+  return fallback;
 }
 
 function collectResources(scope: Construct): Array<Construct & ResourceConstruct> {
@@ -154,28 +189,25 @@ function collectResources(scope: Construct): Array<Construct & ResourceConstruct
 }
 
 /**
- * ConnectionSchema has isReady; wire it here explicitly until we have a more
- * general "poll after create" contract. Other resources' isReady is hooked in
- * M4 (DataStream) and M5 (DMO).
+ * Resource-agnostic "wait until ready" hook. Runs the resource's isReady (if
+ * any) in a pollUntil loop. Constructs can override the defaults via
+ * `readyIntervalMs` / `readyTimeoutMs` fields — e.g. DataStream uses 2s × 60s,
+ * ConnectionSchema uses 10s × 120s.
  */
 async function maybeWaitReady<T>(
   ctx: ResourceContext,
   c: Construct & ResourceConstruct,
   output: T,
 ): Promise<void> {
-  if (c.resource === (ConnectionSchemaResource as unknown)) {
-    const o = output as { connectionId: string; schemaName: string };
-    await waitForSchemaReady(ctx, o.connectionId, o.schemaName);
-    return;
-  }
-  if (c.resource.isReady) {
-    // Generic loop — 2s × 60 attempts by default, resource-specific timeouts land later.
-    for (let i = 0; i < 60; i++) {
-      if (await c.resource.isReady(ctx, output as never)) return;
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    throw new Error(`${c.uniqueId}: isReady timed out after 120s`);
-  }
+  if (!c.resource.isReady) return;
+  const intervalMs =
+    (c as { readyIntervalMs?: number }).readyIntervalMs ?? 2_000;
+  const timeoutMs =
+    (c as { readyTimeoutMs?: number }).readyTimeoutMs ?? 120_000;
+  await pollUntil<true>(
+    async () => ((await c.resource.isReady!(ctx, output as never)) ? true : null),
+    { intervalMs, timeoutMs },
+  );
 }
 
 export type { Op, OpKind };

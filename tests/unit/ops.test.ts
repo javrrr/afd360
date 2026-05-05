@@ -86,7 +86,12 @@ describe("computeOp", () => {
       hash,
       createdAt: "2026-01-01T00:00:00Z",
     };
-    const op = await computeOp(ctx, conn, state, new Map([["RagDemo/DocsS3", "0sH"]]));
+    const op = await computeOp(
+      ctx,
+      conn,
+      state,
+      new Map([["RagDemo/DocsS3", { salesforceId: "0sH", apiName: "DocsS3" }]]),
+    );
     expect(op.kind).toBe("noop");
   });
 
