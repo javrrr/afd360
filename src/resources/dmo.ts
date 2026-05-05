@@ -144,12 +144,38 @@ export const DmoResource: Resource<DmoResourceProps, DmoOutput> = {
   },
 
   async delete(ctx, fullName): Promise<void> {
+    // Quirk B3: DMO delete cascades to mappings on the platform side.
+    // We do NOT delete mappings first — Mapping.delete is a no-op.
+    //
+    // Idempotency quirk: DELETE on an already-gone DMO returns 500
+    // INTERNAL_ERROR ("error id X"), NOT 404. Probed on jaygentforce
+    // 2026-05-05. isNotFound accepts both 404 and 500 with "not found"
+    // text, but this 500 has no diagnostic body — so we must catch
+    // 500+errorCode=INTERNAL_ERROR explicitly as "probably already gone"
+    // after a first attempt has demonstrated the resource existed.
+    //
+    // Pre-check the DMO's existence; if already gone, noop.
     try {
-      // Quirk B3: DMO delete cascades to mappings on the platform side.
-      // We do NOT delete mappings first — Mapping.delete is a no-op.
+      const existing = await ctx.client.dataModelObjects.get(fullName);
+      if (!existing) return;
+    } catch (err) {
+      if (isNotFound(err)) return;
+      // Other errors on the pre-check shouldn't mask delete attempts.
+    }
+    try {
       await retryOn5xx(() => ctx.client.dataModelObjects.delete(fullName));
     } catch (err) {
       if (isNotFound(err)) return;
+      // Defensive: if DELETE 500s with INTERNAL_ERROR but a subsequent GET
+      // confirms the DMO is gone, treat as success. Avoids stranded destroy.
+      const status = (err as { status?: unknown }).status;
+      if (status === 500 || status === 404) {
+        try {
+          await ctx.client.dataModelObjects.get(fullName);
+        } catch (verifyErr) {
+          if (isNotFound(verifyErr)) return;
+        }
+      }
       throw err;
     }
   },
