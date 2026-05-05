@@ -131,17 +131,21 @@ function buildAwsS3Payload(p: DataStreamResourceProps): unknown {
     );
   }
   const s3 = p.s3;
-  // Shape modeled from a live ACTIVE stream on jaygentforce (S3):
-  //   dataStreamType: "CONNECTORSFRAMEWORK"
-  //   connectorInfo: { connectorType: "AwsS3", connectorDetails: { name, type: "AwsS3" } }
-  //   advancedAttributes: { fileType, importDirectory, fileName, ... }
+  // Shape modeled from the SDK's DataStreamConnectorInput discriminated union
+  // (schemas.d.ts): the create-time discriminator is "DataConnector" (the
+  // catch-all for the Data Connector Framework family — AwsS3, Snowflake,
+  // AzureBlob, Sftp, etc.), NOT the specific connector name. The specific
+  // name (AwsS3) goes on `connectorDetails.type`. Quirky but load-bearing:
+  // GET responses echo back `connectorType: "AwsS3"`, but POSTing that
+  // verbatim gets `Could not resolve type id 'AwsS3' into a subtype`.
+  // Evidence: jaygentforce C4 deploy 2026-05-05.
   return {
     name: p.name,
     label: p.label,
     datasource: p.connectionName,
     datastreamType: "CONNECTORSFRAMEWORK",
     connectorInfo: {
-      connectorType: "AwsS3",
+      connectorType: "DataConnector",
       connectorDetails: { name: p.connectionName, type: "AwsS3" },
     },
     advancedAttributes: {
@@ -149,7 +153,6 @@ function buildAwsS3Payload(p: DataStreamResourceProps): unknown {
       fileName: s3.fileName,
       importDirectory: s3.importDirectory ?? "",
       areHeadersIncludedInFile: s3.areHeadersIncludedInFile ?? "true",
-      // Default CSV options; platform fills sensible defaults if omitted.
       ...(s3.delimiter ? { delimiter: s3.delimiter } : {}),
     },
     dataLakeObjectInfo: {
