@@ -31,9 +31,12 @@ new Connection(stack, "AFD360SFConn", {
   credentials: {
     authenticationOption: "KeyPair",
     user: "${env.SNOWFLAKE_USER}",
-    // PKCS#8 private key — multi-line PEM. ${file:...} reads the file at
-    // deploy time; contents never live in .env.local.
-    privateKey: "${file:${env.SNOWFLAKE_PRIVATE_KEY_PATH}}",
+    // Snowflake's privateKey field needs the base64 body only — PEM
+    // headers and whitespace stripped. Raw PEM creates a connection that
+    // looks structurally fine but fails the auth handshake silently.
+    // ${pem:...} does the transformation at deploy time; the file on disk
+    // stays in normal PEM format.
+    privateKey: "${pem:${env.SNOWFLAKE_PRIVATE_KEY_PATH}}",
     // If the key is passphrase-protected, uncomment:
     // passphrase: "${env.SNOWFLAKE_PASSPHRASE}",
   },

@@ -110,3 +110,63 @@ describe("substituteEnv — ${file:...} reader", () => {
     }
   });
 });
+
+describe("substituteEnv — ${pem:...} reader", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "afd360-env-pem-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const samplePem = [
+    "-----BEGIN PRIVATE KEY-----",
+    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+    "BKcwggSjAgEAAoIBAQDhQBCDEF",
+    "-----END PRIVATE KEY-----",
+    "",
+  ].join("\n");
+
+  it("strips PEM headers and whitespace, leaving base64 only", async () => {
+    const path = join(dir, "key.p8");
+    await writeFile(path, samplePem);
+    const out = substituteEnv({ privateKey: `\${pem:${path}}` });
+    expect(out).toEqual({
+      privateKey: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDhQBCDEF",
+    });
+  });
+
+  it("resolves ${env.X} inside the pem path", async () => {
+    const path = join(dir, "nested.p8");
+    await writeFile(path, samplePem);
+    const out = substituteEnv(
+      { key: "${pem:${env.KEY_PATH}}" },
+      { KEY_PATH: path },
+    );
+    expect((out as { key: string }).key).toMatch(/^[A-Za-z0-9+/=]+$/);
+  });
+
+  it("tolerates PKCS#1 headers too (BEGIN RSA PRIVATE KEY)", async () => {
+    const path = join(dir, "rsa.p8");
+    await writeFile(path, "-----BEGIN RSA PRIVATE KEY-----\nabc\ndef\n-----END RSA PRIVATE KEY-----\n");
+    expect(substituteEnv(`\${pem:${path}}`)).toBe("abcdef");
+  });
+
+  it("throws when the file doesn't contain a PEM block", async () => {
+    const path = join(dir, "not-pem.txt");
+    await writeFile(path, "just some random text");
+    expect(() => substituteEnv(`\${pem:${path}}`)).toThrow(FileReadError);
+  });
+
+  it("file errors for missing pem paths are aggregated", () => {
+    const missing = join(dir, "does-not-exist.p8");
+    try {
+      substituteEnv(`\${pem:${missing}}`);
+      throw new Error("expected FileReadError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(FileReadError);
+      expect((err as FileReadError).paths[0]!.path).toBe(missing);
+    }
+  });
+});
