@@ -20,6 +20,7 @@ import {
   type OpKind,
 } from "./ops.js";
 import { pollUntil } from "../core/poll.js";
+import { substituteEnv } from "../core/env.js";
 
 const DEFAULT_CONFIG = "afd360.config.ts";
 
@@ -73,14 +74,17 @@ export function registerDeploy(program: Command): void {
       let wrote = 0;
       for (const uid of order) {
         const c = byId.get(uid)!;
-        const op = await computeOp(ctx, c, state, deployed);
+        const op = await computeOp(ctx, c, state, deployed, { strictEnv: true });
         ops.push(op);
-        const resolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
-        if (!resolved && op.kind !== "noop") {
+        const rawResolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
+        if (!rawResolved && op.kind !== "noop") {
           throw new Error(
             `Deploy runner invariant broken: ${c.uniqueId} dependencies unresolved before its turn.`,
           );
         }
+        // Substitute ${env.X} before any write. computeOp already did this
+        // with strictEnv:true, so if we got here it's safe.
+        const resolved = rawResolved ? substituteEnv(rawResolved) : rawResolved;
         switch (op.kind) {
           case "noop": {
             process.stdout.write(`  ${pc.gray("noop")}     ${c.uniqueId}\n`);

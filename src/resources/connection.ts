@@ -19,12 +19,39 @@ import {
  * `schema` is only meaningful for `IngestApi` connectors. Supplying it
  * materializes a child ConnectionSchema with a dependency edge.
  */
+/**
+ * Friendly key-value map for connection credentials / parameters.
+ * afd360 converts this into the API's `[{paramName, value}, ...]` shape.
+ *
+ * Example (AwsS3):
+ *   credentials: {
+ *     authenticationOption: "accessKeyAndSecret",
+ *     accessKey:  "${env.AWS_ACCESS_KEY}",
+ *     accessSecret: "${env.AWS_ACCESS_SECRET}",
+ *   },
+ *   parameters: { bucketName: "cdp-data-javier", parentDirectory: "/" },
+ */
+export type ConnectionParams = Readonly<Record<string, string>>;
+
 export interface ConnectionProps {
   readonly connectorType: string;
   readonly label: string;
   readonly name?: string;
-  /** Connector-specific nested payload (credentials, params). */
-  readonly connector?: Record<string, unknown>;
+  /**
+   * Data connector credentials. Required for "Data Connection" family
+   * connectors (AwsS3, Snowflake, Sftp, AzureBlob, Databricks, Gcs, etc.).
+   * Not applicable for IngestApi (no credentials), SalesforceDotCom (uses
+   * OAuth), SalesforceMarketingCloud (separate flow), or StreamingApp.
+   */
+  readonly credentials?: ConnectionParams;
+  /** Connection parameters (bucketName, parentDirectory, host, etc.). */
+  readonly parameters?: ConnectionParams;
+  /**
+   * Data connection direction. Required for Data Connection family, ignored
+   * otherwise. Defaults to "Ingress" — read-into-Data-Cloud. Egress is for
+   * activation targets.
+   */
+  readonly method?: "Ingress" | "Egress";
   /** IngestApi schema registration — ignored for other connector types. */
   readonly schema?: ConnectionSchemaProps;
 }
@@ -39,14 +66,35 @@ export interface ConnectionOutput {
 }
 
 /**
- * Props that actually go over the wire. `schema` is stripped because it's a
- * separate resource handled by ConnectionSchema.
+ * Build the Connect API body. `schema` is stripped (separate resource).
+ * Credentials/parameters are converted from the authoring-friendly object
+ * shape to the API's `[{paramName, value}, ...]` arrays.
+ *
+ * IngestApi: body = { connectorType, label, name } only.
+ * Data Connection family (AwsS3, Snowflake, Sftp, AzureBlob, …):
+ *   body = { connectorType, label, name, method, credentials[], parameters[] }.
  */
 function apiPayload(props: ConnectionProps, devName: string): unknown {
-  const { schema: _schema, name: _name, ...rest } = props;
-  void _schema;
-  void _name;
-  return { ...rest, name: devName };
+  const base: Record<string, unknown> = {
+    connectorType: props.connectorType,
+    label: props.label,
+    name: devName,
+  };
+  if (props.connectorType === "IngestApi") {
+    return base;
+  }
+  // Data Connection family.
+  return {
+    ...base,
+    method: props.method ?? "Ingress",
+    credentials: toParamArray(props.credentials),
+    parameters: toParamArray(props.parameters),
+  };
+}
+
+function toParamArray(kv: ConnectionParams | undefined): Array<{ paramName: string; value: string }> {
+  if (!kv) return [];
+  return Object.entries(kv).map(([paramName, value]) => ({ paramName, value }));
 }
 
 export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {

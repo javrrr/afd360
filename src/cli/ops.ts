@@ -17,6 +17,7 @@
 import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import type { Construct, Resource, ResourceContext } from "../core/construct.js";
 import type { StackState, StateResource } from "../core/state.js";
+import { substituteEnv, UnresolvedEnvError } from "../core/env.js";
 
 export type OpKind = "noop" | "create" | "adopt" | "recreate";
 
@@ -35,13 +36,31 @@ export async function computeOp(
   c: Construct & ResourceConstruct,
   state: StackState,
   deployed: ReadonlyMap<string, DeployedRef>,
+  opts: { strictEnv?: boolean } = {},
 ): Promise<Op> {
   const entry: StateResource | undefined = state.resources[c.uniqueId];
   // resolveProps returns null when required deps aren't deployed yet — that's
   // expected at diff-time for second-and-later resources. Hash over the
   // authored props in that case; lookupByProps is skipped because it requires
   // fully-resolved props (e.g. ConnectionSchema needs connectionId).
-  const resolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
+  const resolvedRaw = c.resolveProps ? c.resolveProps(deployed) : c.props;
+  // Apply env substitution. deploy passes strictEnv:true so missing secrets
+  // surface as a clear error before any API write. diff passes strictEnv:false
+  // so it works offline-ish — hash still reflects authored (unresolved) props.
+  let resolved: unknown = resolvedRaw;
+  if (resolvedRaw) {
+    try {
+      resolved = substituteEnv(resolvedRaw);
+    } catch (err) {
+      if (err instanceof UnresolvedEnvError && !opts.strictEnv) {
+        // Leave the ${env.X} tokens in place for hashing; lookupByProps may
+        // still work when its required inputs aren't token-substituted.
+        resolved = resolvedRaw;
+      } else {
+        throw err;
+      }
+    }
+  }
   const hashInput = resolved ?? c.props;
   const plannedHash = c.resource.hash(hashInput);
 
