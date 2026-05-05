@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { substituteEnv, UnresolvedEnvError } from "../../src/core/env.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  substituteEnv,
+  UnresolvedEnvError,
+  FileReadError,
+} from "../../src/core/env.js";
 
 describe("substituteEnv", () => {
   it("substitutes tokens in strings", () => {
@@ -51,5 +58,55 @@ describe("substituteEnv", () => {
       PATH: "p",
     });
     expect(out).toBe("s3://b/p");
+  });
+});
+
+describe("substituteEnv — ${file:...} reader", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "afd360-env-file-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("reads file contents verbatim", async () => {
+    const path = join(dir, "key.p8");
+    const content = "-----BEGIN PRIVATE KEY-----\nABCDEF==\n-----END PRIVATE KEY-----\n";
+    await writeFile(path, content);
+    const out = substituteEnv({ privateKey: `\${file:${path}}` });
+    expect(out).toEqual({ privateKey: content });
+  });
+
+  it("resolves ${env.X} inside the file path first", async () => {
+    const path = join(dir, "nested.txt");
+    await writeFile(path, "hello");
+    const out = substituteEnv(
+      { value: "${file:${env.KEY_PATH}}" },
+      { KEY_PATH: path },
+    );
+    expect(out).toEqual({ value: "hello" });
+  });
+
+  it("throws FileReadError listing every missing file", () => {
+    const missingA = join(dir, "a-does-not-exist");
+    const missingB = join(dir, "b-does-not-exist");
+    try {
+      substituteEnv({ a: `\${file:${missingA}}`, b: `\${file:${missingB}}` });
+      throw new Error("expected FileReadError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(FileReadError);
+      const paths = (err as FileReadError).paths.map((p) => p.path).sort();
+      expect(paths).toEqual([missingA, missingB].sort());
+    }
+  });
+
+  it("env errors take precedence over file errors", () => {
+    try {
+      substituteEnv({ a: "${file:${env.MISSING}}" });
+      throw new Error("expected UnresolvedEnvError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnresolvedEnvError);
+    }
   });
 });

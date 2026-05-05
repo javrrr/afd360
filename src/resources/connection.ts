@@ -83,13 +83,19 @@ function apiPayload(props: ConnectionProps, devName: string): unknown {
   if (props.connectorType === "IngestApi") {
     return base;
   }
-  // Data Connection family.
-  return {
+  // Data Connection family. `parameters` is omitted entirely when empty
+  // (Snowflake's connection create has no connection-level parameters — those
+  // live on the DataStream's advancedAttributes — so an empty `[]` may be
+  // rejected). `credentials` also omitted-when-empty for symmetry.
+  const body: Record<string, unknown> = {
     ...base,
     method: props.method ?? "Ingress",
-    credentials: toParamArray(props.credentials),
-    parameters: toParamArray(props.parameters),
   };
+  const credentials = toParamArray(props.credentials);
+  if (credentials.length > 0) body["credentials"] = credentials;
+  const parameters = toParamArray(props.parameters);
+  if (parameters.length > 0) body["parameters"] = parameters;
+  return body;
 }
 
 function toParamArray(kv: ConnectionParams | undefined): Array<{ paramName: string; value: string }> {
