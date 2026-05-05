@@ -36,3 +36,10 @@ export type {
   MappingOutput,
   FieldMapping,
 } from "./resources/mapping.js";
+export { Relationship } from "./resources/relationship.js";
+export type {
+  RelationshipProps,
+  RelationshipOutput,
+  RelationshipCardinality,
+  RelationshipOwner,
+} from "./resources/relationship.js";
