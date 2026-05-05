@@ -8,3 +8,9 @@ coverage/
 .afd360/plan.json
 .afd360/metadata-deploy/
 .afd360/state/*.local.json
+
+# Dotenv — never commit local secrets. `.env` may be committed as a template
+# of non-secret defaults; `.env.local` and env-specific variants are always
+# local-only.
+.env.local
+.env.*.local
