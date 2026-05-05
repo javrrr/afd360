@@ -19,5 +19,20 @@ export type {
   DataStreamProps,
   DataStreamOutput,
   DataStreamPrimaryKey,
+  DataStreamConnectorType,
+  AwsS3StreamAttributes,
   DloCategory,
 } from "./resources/data-stream.js";
+export { DMO } from "./resources/dmo.js";
+export type {
+  DmoProps,
+  DmoOutput,
+  DmoField,
+  DmoCategory,
+} from "./resources/dmo.js";
+export { Mapping } from "./resources/mapping.js";
+export type {
+  MappingProps,
+  MappingOutput,
+  FieldMapping,
+} from "./resources/mapping.js";
