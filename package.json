@@ -1,0 +1,68 @@
+{
+  "name": "afd360",
+  "version": "0.0.1",
+  "description": "Agentforce Data 360 SDK — declare Data 360 configurations in a manifest, deploy them to a Salesforce org.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "bin": {
+    "afd360": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "README.md",
+    "PRD.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist .afd360/plan.json"
+  },
+  "dependencies": {
+    "@salesforce/core": "^8.29.0",
+    "commander": "^14.0.0",
+    "data-360-sdk": "^0.2.8",
+    "picocolors": "^1.1.1",
+    "tsx": "^4.21.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "salesforce",
+    "data-cloud",
+    "data-360",
+    "agentforce",
+    "sdk",
+    "iac"
+  ],
+  "author": "javrrr",
+  "license": "UNLICENSED",
+  "private": true
+}
