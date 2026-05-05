@@ -1,8 +1,8 @@
 import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource, type ResourceContext } from "../core/construct.js";
+import type { DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn5xx } from "../client/retry.js";
-import { pollUntil } from "../core/poll.js";
 
 /**
  * Authored shape for an IngestApi schema object. Matches
@@ -88,10 +88,14 @@ export const ConnectionSchemaResource: Resource<
   },
 
   async isReady(ctx, output): Promise<boolean> {
-    // Poll listSchema until availabilityStatus === "Available" (tdc pattern).
+    // Ready values observed on jaygentforce:
+    //   - "Available" (fresh schema, no stream yet)
+    //   - "In Use"    (schema is being consumed by at least one DataStream)
+    // Both are terminal; anything else is still provisioning.
     const result = await ctx.client.connections.listSchema(output.connectionId);
     const match = result.schemas?.find((s) => s.name === output.schemaName);
-    return match?.availabilityStatus === "Available";
+    const status = match?.availabilityStatus;
+    return status === "Available" || status === "In Use";
   },
 
   hash(props): string {
@@ -121,22 +125,6 @@ export async function readSchemaByName(
   };
 }
 
-/** Wait until a schema object reaches availabilityStatus === "Available". */
-export async function waitForSchemaReady(
-  ctx: ResourceContext,
-  connectionId: string,
-  schemaName: string,
-  opts: { intervalMs?: number; timeoutMs?: number } = {},
-): Promise<void> {
-  await pollUntil<true>(
-    async () => {
-      const out = await readSchemaByName(ctx, connectionId, schemaName);
-      return out?.availabilityStatus === "Available" ? true : null;
-    },
-    { intervalMs: opts.intervalMs ?? 10_000, timeoutMs: opts.timeoutMs ?? 120_000 },
-  );
-}
-
 /**
  * Construct. Parented to its owning Connection so its uniqueId reads as
  * `<stack>/<conn-id>/<schema-id>`. Deploy runner treats it as a regular
@@ -151,6 +139,10 @@ export class ConnectionSchema extends Construct {
    *  placeholder is an empty string. */
   readonly props: ConnectionSchemaResourceProps;
   readonly dependsOn: readonly Construct[];
+  // tdc's proven values — schema provisioning usually completes inside ~90s,
+  // but give it 120s headroom. Called by the deploy runner.
+  readonly readyIntervalMs = 10_000;
+  readonly readyTimeoutMs = 120_000;
 
   constructor(scope: Construct, id: string, schemaProps: ConnectionSchemaProps) {
     super(scope, id);
@@ -160,14 +152,9 @@ export class ConnectionSchema extends Construct {
     this.dependsOn = [scope];
   }
 
-  resolveProps(deployedIds: ReadonlyMap<string, string>): ConnectionSchemaResourceProps {
-    const parentId = deployedIds.get(this.scope.path.join("/"));
-    if (!parentId) {
-      throw new Error(
-        `ConnectionSchema "${this.uniqueId}" cannot resolve parent Connection id — ` +
-          `the parent must be deployed first.`,
-      );
-    }
-    return { ...this.props, connectionId: parentId };
+  resolveProps(deployed: ReadonlyMap<string, DeployedRef>): ConnectionSchemaResourceProps | null {
+    const parent = deployed.get(this.scope.path.join("/"));
+    if (!parent) return null;
+    return { ...this.props, connectionId: parent.salesforceId };
   }
 }

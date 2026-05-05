@@ -11,14 +11,26 @@ export interface ResourceConstruct<Props = unknown, Output = unknown>
   readonly props: Props;
   readonly dependsOn: readonly Construct[];
   /**
-   * Deploy-time hook: given the ids of already-deployed resources (keyed by
-   * uniqueId), return the final props to pass to create/update. Used by
-   * resources that reference another resource's Salesforce id (e.g.
-   * ConnectionSchema injects the parent Connection's id here).
+   * Deploy-time hook: given snapshots of already-deployed resources (keyed by
+   * uniqueId), return the final props to pass to create/update. Each
+   * snapshot carries both the Salesforce id and the API-assigned dev name,
+   * because different resources reference dependents differently (e.g.
+   * ConnectionSchema needs the parent's id; DataStream needs the parent's
+   * API name — which the platform may rewrite, see memory note on IngestApi
+   * name auto-suffix).
    *
-   * Default implementation returns `this.props` unchanged.
+   * Returns `null` when required dependencies haven't been deployed yet —
+   * `diff` uses this to fall back to an authored-props hash view without
+   * erroring. At deploy time the runner ensures dependencies are deployed
+   * before this resource runs.
    */
-  resolveProps?(deployedIds: ReadonlyMap<string, string>): Props;
+  resolveProps?(deployed: ReadonlyMap<string, DeployedRef>): Props | null;
+}
+
+/** Snapshot of a resource already present in the org (either from state or a just-finished deploy). */
+export interface DeployedRef {
+  readonly salesforceId: string;
+  readonly apiName: string;
 }
 
 export function isResourceConstruct(

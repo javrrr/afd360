@@ -66,6 +66,26 @@ export function is5xx(err: unknown): boolean {
   return typeof status === "number" && status >= 500 && status < 600;
 }
 
+/**
+ * Does the error body (JSON or string) contain `substring`? Used by
+ * quirk-specific retry predicates (A1 "Illegal argument", B1 "DMO not found",
+ * C1 "DMO not fully materialized", etc.) where the error code lives in the
+ * response body rather than the HTTP status. Case-insensitive.
+ */
+export function errBodyIncludes(err: unknown, substring: string): boolean {
+  if (!err || typeof err !== "object") return false;
+  const body = (err as { body?: unknown }).body;
+  const message = (err as { message?: unknown }).message;
+  const needle = substring.toLowerCase();
+  const text = [
+    typeof body === "string" ? body : JSON.stringify(body ?? ""),
+    typeof message === "string" ? message : "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return text.includes(needle);
+}
+
 /** Convenience wrapper: baseline retry policy for Connect API writes. */
 export function retryOn5xx<T>(
   fn: () => Promise<T>,

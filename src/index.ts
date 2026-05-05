@@ -14,3 +14,10 @@ export type {
   ConnectionSchemaProps,
   ConnectionSchemaOutput,
 } from "./resources/connection-schema.js";
+export { DataStream } from "./resources/data-stream.js";
+export type {
+  DataStreamProps,
+  DataStreamOutput,
+  DataStreamPrimaryKey,
+  DloCategory,
+} from "./resources/data-stream.js";

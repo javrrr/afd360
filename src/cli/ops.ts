@@ -14,7 +14,7 @@
  * becomes noisy we can guard it behind --adopt.
  */
 
-import type { ResourceConstruct } from "../core/app.js";
+import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import type { Construct, Resource, ResourceContext } from "../core/construct.js";
 import type { StackState, StateResource } from "../core/state.js";
 
@@ -34,11 +34,16 @@ export async function computeOp(
   ctx: ResourceContext,
   c: Construct & ResourceConstruct,
   state: StackState,
-  deployedIds: ReadonlyMap<string, string>,
+  deployed: ReadonlyMap<string, DeployedRef>,
 ): Promise<Op> {
   const entry: StateResource | undefined = state.resources[c.uniqueId];
-  const resolvedProps = c.resolveProps ? c.resolveProps(deployedIds) : c.props;
-  const plannedHash = c.resource.hash(resolvedProps);
+  // resolveProps returns null when required deps aren't deployed yet — that's
+  // expected at diff-time for second-and-later resources. Hash over the
+  // authored props in that case; lookupByProps is skipped because it requires
+  // fully-resolved props (e.g. ConnectionSchema needs connectionId).
+  const resolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
+  const hashInput = resolved ?? c.props;
+  const plannedHash = c.resource.hash(hashInput);
 
   if (entry?.salesforceId) {
     const live = await c.resource.read(ctx, entry.salesforceId);
@@ -64,17 +69,18 @@ export async function computeOp(
   }
 
   // No state entry — try to look up by props before issuing a create.
-  const byProps = c.resource.lookupByProps
-    ? await c.resource.lookupByProps(ctx, resolvedProps as never)
-    : null;
-  if (byProps) {
-    return {
-      uniqueId: c.uniqueId,
-      kind: "adopt",
-      construct: c,
-      currentId: c.resource.idOf(byProps),
-      plannedHash,
-    };
+  // Only attempt when props are fully resolved.
+  if (resolved && c.resource.lookupByProps) {
+    const byProps = await c.resource.lookupByProps(ctx, resolved as never);
+    if (byProps) {
+      return {
+        uniqueId: c.uniqueId,
+        kind: "adopt",
+        construct: c,
+        currentId: c.resource.idOf(byProps),
+        plannedHash,
+      };
+    }
   }
   return { uniqueId: c.uniqueId, kind: "create", construct: c, plannedHash };
 }

@@ -7,7 +7,7 @@ import { readState } from "../core/state.js";
 import { topologicalSort } from "../core/graph.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
-import type { ResourceConstruct } from "../core/app.js";
+import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import { computeOp, summarizeOps, type OpKind } from "./ops.js";
 
 const DEFAULT_CONFIG = "afd360.config.ts";
@@ -48,10 +48,13 @@ export function registerDiff(program: Command): void {
         ),
       });
       const byId = new Map(resources.map((r) => [r.uniqueId, r]));
-      const deployedIds = new Map<string, string>(
+      const deployed = new Map<string, DeployedRef>(
         Object.entries(state.resources)
           .filter(([, v]) => v.salesforceId)
-          .map(([k, v]) => [k, v.salesforceId!]),
+          .map(([k, v]) => [
+            k,
+            { salesforceId: v.salesforceId!, apiName: v.apiName },
+          ]),
       );
 
       process.stdout.write(`${pc.bold("diff")} ${orgAlias} (${stack.id})\n`);
@@ -59,7 +62,7 @@ export function registerDiff(program: Command): void {
       const ops = [];
       for (const uid of order) {
         const c = byId.get(uid)!;
-        const op = await computeOp(ctx, c, state, deployedIds);
+        const op = await computeOp(ctx, c, state, deployed);
         ops.push(op);
         const tag = op.kind.padEnd(8, " ");
         process.stdout.write(`  ${LABELS[op.kind](tag)} ${c.uniqueId}\n`);
