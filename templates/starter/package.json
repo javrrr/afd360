@@ -1,0 +1,15 @@
+{
+  "name": "afd360-starter",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "whoami": "afd360 whoami",
+    "diff": "afd360 diff",
+    "deploy": "afd360 deploy",
+    "destroy": "afd360 destroy"
+  },
+  "dependencies": {
+    "afd360": "^0.1.0"
+  }
+}

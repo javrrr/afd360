@@ -1,0 +1,9 @@
+node_modules
+.env
+.env.local
+.afd360/plan.json
+
+# Commit the state file by default — it's the source of truth for what's
+# deployed where. Delete the line below if you want to keep it private
+# (local-only overrides belong in .afd360/state/<org>.local.json).
+!.afd360/state/
