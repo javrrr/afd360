@@ -22,21 +22,26 @@ new Connection(stack, "AFD360SFConn", {
   connectorType: "SNOWFLAKE",
   label: "afd360 snowflake test",
   method: "Ingress",
+  // The Connect API splits connector fields by their `secure` flag in the
+  // connector metadata (GET /ssot/connectors/<type>):
+  //   secure=true  → credentials[]
+  //   secure=false → parameters[]
+  // Sending a secure=false field in credentials[] gets it silently dropped;
+  // the server then reports the field as missing.
   credentials: {
     authenticationOption: "KeyPair",
-    hasPrivateNetworkRoute: "false",
     user: "${env.SNOWFLAKE_USER}",
-    accountUrl: "${env.SNOWFLAKE_ACCOUNT_URL}",
-    warehouse: "${env.SNOWFLAKE_WAREHOUSE}",
     // PKCS#8 private key — multi-line PEM. ${file:...} reads the file at
     // deploy time; contents never live in .env.local.
     privateKey: "${file:${env.SNOWFLAKE_PRIVATE_KEY_PATH}}",
     // If the key is passphrase-protected, uncomment:
     // passphrase: "${env.SNOWFLAKE_PASSPHRASE}",
   },
-  // The Snowflake connector stores database/schema/object on the DataStream
-  // (advancedAttributes), not at the connection level — see
-  // GET /ssot/connectors/SNOWFLAKE. So no `parameters` here.
+  parameters: {
+    accountUrl: "${env.SNOWFLAKE_ACCOUNT_URL}",
+    warehouse: "${env.SNOWFLAKE_WAREHOUSE}",
+    hasPrivateNetworkRoute: "false",
+  },
 });
 
 export default app;
