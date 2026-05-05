@@ -199,7 +199,10 @@ describe("DataStream AwsS3 path", () => {
     const body = create.mock.calls[0]![0] as Record<string, unknown>;
     expect(body["datastreamType"]).toBe("CONNECTORSFRAMEWORK");
     expect(body["connectorInfo"]).toMatchObject({
-      connectorType: "AwsS3",
+      // DataConnector (NOT AwsS3) is the create-time discriminator — see
+      // SDK's DataStreamConnectorInput discriminated union. GET responses
+      // echo back "AwsS3" but POSTing that gets a Jackson subtype error.
+      connectorType: "DataConnector",
       connectorDetails: { name: "S3_resolved", type: "AwsS3" },
     });
     expect(body["advancedAttributes"]).toMatchObject({
