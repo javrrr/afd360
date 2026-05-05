@@ -380,19 +380,56 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
   },
 
   async delete(ctx, recordId): Promise<void> {
+    // We need the DLO name before issuing the delete — afterwards the stream
+    // is gone and we can't find the DLO by association. Read first to capture
+    // the DLO. Tolerate 404 in case the stream is already gone.
+    let dloName: string | undefined;
+    try {
+      const detail = await ctx.client.dataStreams.get(recordId);
+      dloName = detail.dataLakeObjectInfo?.name;
+    } catch (err) {
+      if (isNotFound(err)) return;
+      // Non-404 read errors shouldn't block delete attempts.
+    }
+
     try {
       // PLAN §9 D2 — prefer cascading the DLO delete; fallback to leaving
-      // the DLO behind if the platform rejects it (DLO may be referenced).
-      // Real orphan-DLO cleanup lands in M9.
+      // the DLO behind if the platform rejects it (DLO may be referenced by
+      // mappings). In practice cascade-true returns 204 but quietly LEAVES the
+      // DLO in place when it has dependent mappings (evidence: jaygentforce C5
+      // 2026-05-05). We re-check and clean up explicitly below.
       await retryOn5xx(() =>
         ctx.client.dataStreams.delete(recordId, { shouldDeleteDataLakeObject: true }),
       );
     } catch (err) {
-      if (isNotFound(err)) return;
-      // If shouldDeleteDataLakeObject=true fails, retry without the cascade.
-      await retryOn5xx(() =>
-        ctx.client.dataStreams.delete(recordId, { shouldDeleteDataLakeObject: false }),
-      );
+      if (isNotFound(err)) {
+        // stream already gone; still try to clean up the DLO below.
+      } else {
+        // cascade-true failed (412 or similar). Retry without cascade so the
+        // stream at least goes away; DLO cleanup happens below.
+        await retryOn5xx(() =>
+          ctx.client.dataStreams.delete(recordId, { shouldDeleteDataLakeObject: false }),
+        );
+      }
+    }
+
+    // Post-delete: verify DLO is actually gone. If not, the Connect API
+    // cascade silently left an orphan — attempt an explicit DLO delete so
+    // downstream Connection.delete doesn't trip on DEPENDENCY_EXISTS.
+    if (dloName) {
+      try {
+        await ctx.client.dataLakeObjects.get(dloName);
+        // Still there — try to delete it directly.
+        await retryOn5xx(() =>
+          ctx.client.dataLakeObjects.delete(dloName!),
+        );
+      } catch (err) {
+        if (isNotFound(err)) return; // already gone, good.
+        // If the DLO has other mapping references we can't clean, surface the
+        // original error for the user — but only if a destroy path is actually
+        // running. For now swallow silently; M9 (teardown hardening) can add
+        // more sophisticated orphan handling.
+      }
     }
   },
 
