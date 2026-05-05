@@ -115,6 +115,22 @@ export async function computeOp(
           plannedHash,
         };
       }
+      // Drift check — if the live resource's key fields don't match what's
+      // authored (e.g. a DMO with category=ENGAGEMENT when the manifest
+      // says Other), adopting would leave the DMO as-is and silently
+      // return noop on future diffs. Force a recreate instead.
+      const matches =
+        !c.resource.matchesAuthored ||
+        c.resource.matchesAuthored(byProps, resolved as never);
+      if (!matches) {
+        return {
+          uniqueId: c.uniqueId,
+          kind: "recreate",
+          construct: c,
+          currentId: c.resource.idOf(byProps),
+          plannedHash,
+        };
+      }
       return {
         uniqueId: c.uniqueId,
         kind: "adopt",
