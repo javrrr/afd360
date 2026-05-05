@@ -12,8 +12,12 @@ import { ConnectionSchema } from "./connection-schema.js";
  */
 export type DloCategory = "Engagement" | "Profile" | "Other";
 
-/** IngestApi is the only connector type wired up in M4; more land in M5+. */
-export type DataStreamConnectorType = "IngestApi";
+/**
+ * Supported connector types. Each maps to a different Connect API payload
+ * shape (`datastreamType`, `connectorInfo.connectorDetails`, and sometimes
+ * `advancedAttributes`). M4 wired up IngestApi; M5 adds AwsS3.
+ */
+export type DataStreamConnectorType = "IngestApi" | "AwsS3";
 
 export interface DataStreamPrimaryKey {
   readonly name: string;
@@ -22,10 +26,28 @@ export interface DataStreamPrimaryKey {
   readonly dataType?: string;
 }
 
+/**
+ * AwsS3-specific advanced attributes. Required when the parent connection is
+ * AwsS3; ignored for other connectors.
+ */
+export interface AwsS3StreamAttributes {
+  /** "CSV" | "PARQUET". Case-sensitive as returned by the connector metadata. */
+  readonly fileType: "CSV" | "PARQUET";
+  /** Bucket-relative directory. Empty string or omitted = root (`/`). */
+  readonly importDirectory?: string;
+  /** File name or glob. For CSV: a specific file or a prefix pattern. */
+  readonly fileName: string;
+  /** CSV only — "true"/"false" string (platform uses stringy booleans here). */
+  readonly areHeadersIncludedInFile?: "true" | "false";
+  /** Optional delimiter override — default is auto-detect. */
+  readonly delimiter?: string;
+}
+
 export interface DataStreamProps {
   readonly connection: Connection;
-  /** Schema object name the stream ingests. For IngestApi, this is the
-   *  ConnectionSchema's name; for other connectors it's e.g. an S3 prefix. */
+  /** Logical name of the source object:
+   *  - IngestApi: schema object name (matches ConnectionSchema.schemaName).
+   *  - AwsS3: a stable identifier for the stream; used for the DLO name. */
   readonly sourceObject: string;
   /** Developer name; falls back to the construct logical id. */
   readonly name?: string;
@@ -35,6 +57,11 @@ export interface DataStreamProps {
   /** Data space for the resulting DLO. "default" unless multi-tenant. */
   readonly dataSpace?: string;
   readonly primaryKey: DataStreamPrimaryKey;
+  /**
+   * AwsS3-only: where to find the data. Required when the parent
+   * connection's connectorType is AwsS3; validated at construct time.
+   */
+  readonly s3?: AwsS3StreamAttributes;
 }
 
 export interface DataStreamOutput {
@@ -49,6 +76,7 @@ export interface DataStreamOutput {
 }
 
 export interface DataStreamResourceProps {
+  readonly connectorType: DataStreamConnectorType;
   readonly connectionName: string;
   readonly sourceObject: string;
   readonly name: string;
@@ -57,10 +85,18 @@ export interface DataStreamResourceProps {
   readonly refreshMode: "UPSERT" | "REPLACE" | "APPEND";
   readonly dataSpace: string;
   readonly primaryKey: DataStreamPrimaryKey;
+  readonly s3?: AwsS3StreamAttributes;
+}
+
+function buildCreatePayload(p: DataStreamResourceProps): unknown {
+  if (p.connectorType === "IngestApi") return buildIngestApiPayload(p);
+  if (p.connectorType === "AwsS3") return buildAwsS3Payload(p);
+  // Exhaustive check — future connector types land here.
+  const _exhaustive: never = p.connectorType;
+  throw new Error(`DataStream connectorType "${String(_exhaustive)}" is not supported yet.`);
 }
 
 function buildIngestApiPayload(p: DataStreamResourceProps): unknown {
-  const pk = p.primaryKey;
   return {
     name: p.name,
     label: p.label,
@@ -81,17 +117,69 @@ function buildIngestApiPayload(p: DataStreamResourceProps): unknown {
       dataspaceInfo: [{ name: p.dataSpace }],
       // Only the PK goes in dataLakeFieldInputRepresentations — the API
       // derives the rest from the ConnectionSchema.
-      dataLakeFieldInputRepresentations: [
-        {
-          name: pk.name,
-          label: pk.label ?? pk.name,
-          dataType: pk.dataType ?? "Text",
-          isPrimaryKey: true,
-        },
-      ],
+      dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
     },
     refreshConfig: { refreshMode: p.refreshMode },
   };
+}
+
+function buildAwsS3Payload(p: DataStreamResourceProps): unknown {
+  if (!p.s3) {
+    throw new Error(
+      `DataStream "${p.name}" has connectorType=AwsS3 but no s3 attributes. ` +
+        `Provide { fileType, fileName, importDirectory?, ... }.`,
+    );
+  }
+  const s3 = p.s3;
+  // Shape modeled from a live ACTIVE stream on jaygentforce (S3):
+  //   dataStreamType: "CONNECTORSFRAMEWORK"
+  //   connectorInfo: { connectorType: "AwsS3", connectorDetails: { name, type: "AwsS3" } }
+  //   advancedAttributes: { fileType, importDirectory, fileName, ... }
+  return {
+    name: p.name,
+    label: p.label,
+    datasource: p.connectionName,
+    datastreamType: "CONNECTORSFRAMEWORK",
+    connectorInfo: {
+      connectorType: "AwsS3",
+      connectorDetails: { name: p.connectionName, type: "AwsS3" },
+    },
+    advancedAttributes: {
+      fileType: s3.fileType,
+      fileName: s3.fileName,
+      importDirectory: s3.importDirectory ?? "",
+      areHeadersIncludedInFile: s3.areHeadersIncludedInFile ?? "true",
+      // Default CSV options; platform fills sensible defaults if omitted.
+      ...(s3.delimiter ? { delimiter: s3.delimiter } : {}),
+    },
+    dataLakeObjectInfo: {
+      label: p.sourceObject,
+      name: `${p.sourceObject}__dll`,
+      category: p.category,
+      dataspaceInfo: [{ name: p.dataSpace }],
+      dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
+    },
+    refreshConfig: { refreshMode: p.refreshMode },
+  };
+}
+
+function pkFieldRep(pk: DataStreamPrimaryKey): unknown {
+  return {
+    name: pk.name,
+    label: pk.label ?? pk.name,
+    dataType: pk.dataType ?? "Text",
+    isPrimaryKey: true,
+  };
+}
+
+function inferConnectorType(conn: Connection): DataStreamConnectorType {
+  const ct = conn.props.connectorType;
+  if (ct === "IngestApi") return "IngestApi";
+  if (ct === "AwsS3") return "AwsS3";
+  throw new Error(
+    `DataStream does not yet support connectorType "${ct}". ` +
+      `Supported: IngestApi, AwsS3. (Snowflake and others will land in later milestones.)`,
+  );
 }
 
 export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOutput> = {
@@ -154,7 +242,7 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
   },
 
   async create(ctx, props): Promise<DataStreamOutput> {
-    const body = buildIngestApiPayload(props) as Parameters<
+    const body = buildCreatePayload(props) as Parameters<
       Data360Client["dataStreams"]["create"]
     >[0];
     // Quirk A1: "Illegal argument" on create is transient — schema
@@ -299,7 +387,24 @@ export class DataStream extends Construct {
     const category: DloCategory = props.category ?? "Other";
     const refreshMode = props.refreshMode ?? "UPSERT";
     const dataSpace = props.dataSpace ?? "default";
-    this.props = {
+    // Derive connector type from the parent Connection and validate s3 attrs.
+    // Keeping this mapping in one place means the manifest author picks one
+    // Connection + one set of stream props; the connector-specific payload
+    // shape is afd360's problem.
+    const connectorType = inferConnectorType(props.connection);
+    if (connectorType === "AwsS3" && !props.s3) {
+      throw new Error(
+        `DataStream "${id}": AwsS3 connections require s3 attributes ` +
+          `({ fileType, fileName, importDirectory? }).`,
+      );
+    }
+    if (connectorType === "IngestApi" && props.s3) {
+      throw new Error(
+        `DataStream "${id}": s3 attributes are only meaningful for AwsS3 connections.`,
+      );
+    }
+    const baseProps = {
+      connectorType,
       // connectionName gets resolved from state at deploy time; placeholder here.
       connectionName: "",
       sourceObject: props.sourceObject,
@@ -310,6 +415,7 @@ export class DataStream extends Construct {
       dataSpace,
       primaryKey: props.primaryKey,
     };
+    this.props = props.s3 ? { ...baseProps, s3: props.s3 } : baseProps;
     // Auto-wire dependency on the parent Connection (and ConnectionSchema if
     // present) so the deploy runner orders us after both.
     const autoDeps: Construct[] = [props.connection];

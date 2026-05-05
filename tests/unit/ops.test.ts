@@ -119,9 +119,10 @@ describe("computeOp", () => {
   it("emits 'recreate' when live resource is isFailed (DataStream status=ERROR)", async () => {
     const app = new App();
     const stack = new Stack(app, "Rag", { targetOrg: "jaygentforce" });
-    const conn = new Connection(stack, "DocsS3", {
-      connectorType: "AwsS3",
-      label: "DocsS3",
+    const conn = new Connection(stack, "DocsIngest", {
+      connectorType: "IngestApi",
+      label: "Docs",
+      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
     });
     const { DataStream } = await import("../../src/resources/data-stream.js");
     const stream = new DataStream(stack, "DocsStream", {

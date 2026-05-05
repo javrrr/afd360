@@ -136,6 +136,80 @@ describe("DataStreamResource.isFailed", () => {
   });
 });
 
+describe("DataStream AwsS3 path", () => {
+  function buildS3Fixture() {
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "x" });
+    const conn = new Connection(stack, "S3", {
+      connectorType: "AwsS3",
+      label: "S3",
+      method: "Ingress",
+      credentials: { authenticationOption: "accessKeyAndSecret", accessKey: "a", accessSecret: "b" },
+      parameters: { bucketName: "b", parentDirectory: "/" },
+    });
+    return { stack, conn };
+  }
+
+  it("requires s3 attributes for AwsS3 connections", () => {
+    const { stack, conn } = buildS3Fixture();
+    expect(() => new DataStream(stack, "Bad", {
+      connection: conn,
+      sourceObject: "x",
+      primaryKey: { name: "id" },
+    })).toThrow(/s3 attributes/);
+  });
+
+  it("rejects s3 attrs on an IngestApi connection", () => {
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "x" });
+    const conn = new Connection(stack, "IA", {
+      connectorType: "IngestApi",
+      label: "IA",
+      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    expect(() => new DataStream(stack, "X", {
+      connection: conn,
+      sourceObject: "KB",
+      primaryKey: { name: "Id" },
+      s3: { fileType: "CSV", fileName: "x.csv" },
+    })).toThrow(/only meaningful for AwsS3/);
+  });
+
+  it("builds CONNECTORSFRAMEWORK payload with advancedAttributes", async () => {
+    const { stack, conn } = buildS3Fixture();
+    const stream = new DataStream(stack, "Stream", {
+      connection: conn,
+      sourceObject: "orders",
+      primaryKey: { name: "id" },
+      s3: {
+        fileType: "CSV",
+        importDirectory: "demo",
+        fileName: "orders.csv",
+        areHeadersIncludedInFile: "true",
+      },
+    });
+    const ctx = mockCtx();
+    const create = (ctx.client.dataStreams as unknown as { create: ReturnType<typeof vi.fn> }).create;
+    create.mockResolvedValue({ name: "Stream", recordId: "1ds" });
+    await DataStreamResource.create(ctx, {
+      ...stream.props,
+      connectionName: "S3_resolved",
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    const body = create.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body["datastreamType"]).toBe("CONNECTORSFRAMEWORK");
+    expect(body["connectorInfo"]).toMatchObject({
+      connectorType: "AwsS3",
+      connectorDetails: { name: "S3_resolved", type: "AwsS3" },
+    });
+    expect(body["advancedAttributes"]).toMatchObject({
+      fileType: "CSV",
+      fileName: "orders.csv",
+      importDirectory: "demo",
+    });
+  });
+});
+
 describe("quirk A1 — errBodyIncludes('Illegal argument') predicate", () => {
   it("matches the tdc-observed error body string", () => {
     expect(
