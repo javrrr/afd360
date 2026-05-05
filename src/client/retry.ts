@@ -94,6 +94,61 @@ export function retryOn5xx<T>(
   return retryOn(fn, is5xx, opts);
 }
 
+/**
+ * Shared "resource is already gone" predicate. Use inside `read()` to return
+ * `null`, or inside `delete()` to swallow the error as idempotent success.
+ *
+ * Four patterns we've seen across the Connect API (quirks B1, D1, and the
+ * SearchIndex 400 variant observed on jaygentforce 2026-05-05):
+ *
+ *   - `404` — the clean, documented case. Always "not found".
+ *   - `500` with body text matching `/not\s+found/i` — DMO quirk B1 and
+ *     similar undocumented endpoints. Treat as "not found".
+ *   - `400` with body text matching an extra substring — SearchIndex's
+ *     `GET /ssot/search-index/{devName}` returns 400 INVALID_INPUT with
+ *     `"...was not found"` instead of 404. Opt in per resource via
+ *     `extra400Body`.
+ *   - anything else — rethrow.
+ *
+ * Per-call overrides live in `opts.extra400Body` (string or regex) so a
+ * resource can widen the match without each call-site reimplementing the
+ * whole predicate.
+ */
+export interface NotFoundOptions {
+  /** Substring (case-insensitive) or regex to match against the response body on a 400. */
+  readonly extra400Body?: string | RegExp;
+  /** Substring or regex for 500 bodies. Defaults to /not\s+found/i. */
+  readonly body500?: string | RegExp;
+}
+
+export function isNotFound(err: unknown, opts: NotFoundOptions = {}): boolean {
+  if (!err || typeof err !== "object") return false;
+  const status = (err as { status?: unknown }).status;
+  if (status === 404) return true;
+  if (status === 400 && opts.extra400Body !== undefined) {
+    return bodyMatches(err, opts.extra400Body);
+  }
+  if (status === 500) {
+    // Default matcher — /not\s+found/i covers tdc's B1 quirk ("DMO not found")
+    // and everything we've seen since. Callers rarely need to override.
+    const matcher = opts.body500 ?? /not\s+found/i;
+    return bodyMatches(err, matcher);
+  }
+  return false;
+}
+
+function bodyMatches(err: unknown, matcher: string | RegExp): boolean {
+  if (typeof matcher === "string") return errBodyIncludes(err, matcher);
+  if (!err || typeof err !== "object") return false;
+  const body = (err as { body?: unknown }).body;
+  const message = (err as { message?: unknown }).message;
+  const text = [
+    typeof body === "string" ? body : JSON.stringify(body ?? ""),
+    typeof message === "string" ? message : "",
+  ].join(" ");
+  return matcher.test(text);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

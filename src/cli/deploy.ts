@@ -16,9 +16,12 @@ import type { Construct, ResourceContext } from "../core/construct.js";
 import {
   computeOp,
   summarizeOps,
+  buildDependentsMap,
+  computeBlastRadius,
   type Op,
   type OpKind,
 } from "./ops.js";
+import { createInterface } from "node:readline";
 import { pollUntil } from "../core/poll.js";
 import { substituteEnv } from "../core/env.js";
 
@@ -30,7 +33,11 @@ export function registerDeploy(program: Command): void {
     .description("Apply the manifest to an org (idempotent)")
     .option("-c, --config <path>", "path to afd360.config.ts", DEFAULT_CONFIG)
     .option("-o, --org <alias>", "override stack targetOrg")
-    .action(async (opts: { config: string; org?: string }) => {
+    .option(
+      "--force",
+      "proceed without confirmation when a recreate cascades to 2+ downstream resources",
+    )
+    .action(async (opts: { config: string; org?: string; force?: boolean }) => {
       const app = await loadApp(opts.config);
       if (app.stacks.length !== 1) {
         throw new Error(
@@ -63,6 +70,46 @@ export function registerDeploy(program: Command): void {
       );
 
       process.stdout.write(`${pc.bold("deploy")} ${orgAlias} (${stack.id})\n`);
+
+      // Blast-radius pre-check: compute ops once with the initial deployed
+      // map so we can warn on cascading recreates before issuing any writes.
+      // This is a read-only pass (computeOp only calls GETs and lookupByProps);
+      // the real execution loop below recomputes incrementally for accuracy.
+      const previewOps: Op[] = [];
+      for (const uid of order) {
+        const c = byId.get(uid)!;
+        previewOps.push(await computeOp(ctx, c, state, deployed, { strictEnv: true }));
+      }
+      const dependents = buildDependentsMap(resources);
+      const cascades = computeBlastRadius(previewOps, dependents);
+      const impactfulCascades = [...cascades.entries()].filter(
+        ([, children]) => children.length >= 2,
+      );
+      if (impactfulCascades.length > 0) {
+        process.stdout.write("\n");
+        for (const [parent, children] of impactfulCascades) {
+          process.stdout.write(
+            pc.red(
+              `  !! ${parent} — recreate will also recreate ${children.length} downstream resource${children.length === 1 ? "" : "s"}:\n`,
+            ),
+          );
+          for (const child of children) {
+            process.stdout.write(pc.red(`       ${child}\n`));
+          }
+        }
+        process.stdout.write("\n");
+        if (!opts.force) {
+          const confirmed = await promptConfirm(
+            `Proceed with destructive recreate? [y/N] `,
+          );
+          if (!confirmed) {
+            process.stdout.write(
+              `${pc.bold("abort")} deploy halted; re-run with --force to bypass confirmation.\n`,
+            );
+            return;
+          }
+        }
+      }
 
       // Op computation must happen incrementally as we walk the topological
       // order — each resource's computeOp depends on the (up-to-date) deployed
@@ -212,6 +259,22 @@ async function maybeWaitReady<T>(
     async () => ((await c.resource.isReady!(ctx, output as never)) ? true : null),
     { intervalMs, timeoutMs },
   );
+}
+
+/**
+ * Minimal y/N confirmation prompt. Returns false (abort) in non-interactive
+ * environments — CI-safe, since there's no user to answer. `--force` is the
+ * escape hatch in scripts.
+ */
+async function promptConfirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolve) => rl.question(question, resolve));
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
 }
 
 export type { Op, OpKind };

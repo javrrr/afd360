@@ -1,7 +1,24 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { App, Stack } from "../../src/core/app.js";
 import { Connection, ConnectionResource } from "../../src/resources/connection.js";
 import { ConnectionSchemaResource } from "../../src/resources/connection-schema.js";
+import type { ResourceContext } from "../../src/core/construct.js";
+
+function mockDeleteCtx(): ResourceContext {
+  return {
+    client: {
+      connections: {
+        get: vi.fn(),
+        delete: vi.fn(),
+      },
+    } as unknown as ResourceContext["client"],
+    session: {
+      alias: "jaygentforce", username: "u", orgId: "00D",
+      instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+    },
+    orgAlias: "jaygentforce",
+  };
+}
 
 describe("Connection construct", () => {
   it("exposes devName = authored name, fallback to logical id", () => {
@@ -126,6 +143,23 @@ describe("ConnectionResource.isFailed", () => {
         }),
       ).toBe(false);
     }
+  });
+});
+
+describe("ConnectionResource.delete — already-gone tolerance (D1)", () => {
+  it("swallows 404 as idempotent success", async () => {
+    const ctx = mockDeleteCtx();
+    (ctx.client.connections.delete as ReturnType<typeof vi.fn>).mockRejectedValue({ status: 404 });
+    await expect(ConnectionResource.delete(ctx, "0xH-gone")).resolves.toBeUndefined();
+  });
+
+  it("swallows 500 with 'not found' body", async () => {
+    const ctx = mockDeleteCtx();
+    (ctx.client.connections.delete as ReturnType<typeof vi.fn>).mockRejectedValue({
+      status: 500,
+      body: '[{"message":"The connection was not found."}]',
+    });
+    await expect(ConnectionResource.delete(ctx, "0xH-gone")).resolves.toBeUndefined();
   });
 });
 

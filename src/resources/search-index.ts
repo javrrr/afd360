@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn, retryOn5xx, is5xx, errBodyIncludes } from "../client/retry.js";
+import { retryOn, retryOn5xx, is5xx, errBodyIncludes, isNotFound as baseIsNotFound } from "../client/retry.js";
 import type { DMO } from "./dmo.js";
 
 /**
@@ -166,16 +166,13 @@ const DEFAULT_CHUNKING: ConfigBlock = {
   ],
 };
 
+// SearchIndex's GET /ssot/search-index/{developerName} returns `400
+// INVALID_INPUT` with "...was not found" in the body when the name doesn't
+// exist — not the clean 404 the other endpoints use. Widen the base helper
+// with a 400-body matcher so lookupByProps can return null instead of
+// throwing on a first-deploy miss. See feedback_search-index-create-shape.md.
 function isNotFound(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const status = (err as { status?: unknown }).status;
-  if (status === 404) return true;
-  // Platform returns 400 INVALID_INPUT with message "...was not found" when a
-  // GET by developerName misses — not 404. Treat both as "not found" so
-  // lookupByProps can return null instead of erroring.
-  if (status === 400 && errBodyIncludes(err, "was not found")) return true;
-  if (status === 500 && errBodyIncludes(err, "not found")) return true;
-  return false;
+  return baseIsNotFound(err, { extra400Body: "was not found" });
 }
 
 function rejectDlmSuffix(kind: string, name: string): void {

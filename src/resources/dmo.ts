@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, errBodyIncludes } from "../client/retry.js";
+import { retryOn5xx, isNotFound } from "../client/retry.js";
 import { pollUntil } from "../core/poll.js";
 
 /**
@@ -69,17 +69,6 @@ function toOutput(raw: {
   if (raw.creationType !== undefined) out.creationType = raw.creationType;
   if (raw.status !== undefined) out.status = raw.status;
   return out;
-}
-
-function isNotFound(err: unknown): boolean {
-  // Quirk B1 — PLAN documented a 500 with body "DMO not found"; the live API
-  // on jaygentforce (2026-05-05) now returns a clean 404 ITEM_NOT_FOUND.
-  // Check both, so we're resilient if the quirk regresses.
-  if (!err || typeof err !== "object") return false;
-  const status = (err as { status?: unknown }).status;
-  if (status === 404) return true;
-  if (status === 500 && errBodyIncludes(err, "not found")) return true;
-  return false;
 }
 
 /** DMO dev-name convention: the platform appends __dlm if the user doesn't. */

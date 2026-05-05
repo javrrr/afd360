@@ -248,6 +248,50 @@ describe("DataStream AwsS3 path", () => {
   });
 });
 
+describe("DataStreamResource.delete — already-gone tolerance", () => {
+  function mockDeleteCtx(): ResourceContext {
+    return {
+      client: {
+        dataStreams: {
+          get: vi.fn(),
+          delete: vi.fn(),
+        },
+        dataLakeObjects: {
+          get: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as unknown as ResourceContext["client"],
+      session: {
+        alias: "jaygentforce", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "jaygentforce",
+    };
+  }
+
+  it("swallows 404 from the pre-read and never calls delete", async () => {
+    const ctx = mockDeleteCtx();
+    const client = ctx.client as unknown as { dataStreams: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> } };
+    client.dataStreams.get.mockRejectedValue({ status: 404 });
+    await expect(DataStreamResource.delete(ctx, "recordId-gone")).resolves.toBeUndefined();
+    expect(client.dataStreams.delete).not.toHaveBeenCalled();
+  });
+
+  it("swallows 404 from the cascade DELETE and still attempts DLO cleanup", async () => {
+    const ctx = mockDeleteCtx();
+    const client = ctx.client as unknown as {
+      dataStreams: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+      dataLakeObjects: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+    };
+    client.dataStreams.get.mockResolvedValue({
+      name: "X", recordId: "X", dataLakeObjectInfo: { name: "KB__dll" },
+    });
+    client.dataStreams.delete.mockRejectedValue({ status: 404 });
+    client.dataLakeObjects.get.mockRejectedValue({ status: 404 });  // DLO also gone
+    await expect(DataStreamResource.delete(ctx, "X")).resolves.toBeUndefined();
+  });
+});
+
 describe("quirk A1 — errBodyIncludes('Illegal argument') predicate", () => {
   it("matches the tdc-observed error body string", () => {
     expect(

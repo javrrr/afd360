@@ -152,5 +152,63 @@ export function summarizeOps(ops: readonly Op[]): string {
   return `${counts.create} create, ${counts.recreate} recreate, ${counts.adopt} adopt, ${counts.noop} noop`;
 }
 
+/**
+ * Blast-radius analysis. v1 policy is delete-and-recreate on drift, so any
+ * `recreate` op cascades to every transitive dependent in the DAG — the
+ * children's stored salesforceIds point at resources that will be torn down
+ * with the parent.
+ *
+ * Returns a map: parent uniqueId → list of dependent uniqueIds that will also
+ * recreate as a consequence. Dependencies computed from the resources' own
+ * `dependsOn` edges (same edges the deploy topo-sort uses).
+ *
+ * Callers (diff, deploy) use this to:
+ *   - surface a warning listing cascading recreates
+ *   - gate deploy behind `--force` or interactive confirmation when the
+ *     cascade size is 2+ (arbitrary threshold; one is normal drift churn).
+ */
+export function computeBlastRadius(
+  ops: readonly Op[],
+  dependents: ReadonlyMap<string, readonly string[]>,
+): Map<string, string[]> {
+  const byId = new Map(ops.map((op) => [op.uniqueId, op]));
+  const out = new Map<string, string[]>();
+  for (const op of ops) {
+    if (op.kind !== "recreate") continue;
+    const cascade: string[] = [];
+    const stack = [...(dependents.get(op.uniqueId) ?? [])];
+    const seen = new Set<string>([op.uniqueId]);
+    while (stack.length > 0) {
+      const next = stack.pop()!;
+      if (seen.has(next)) continue;
+      seen.add(next);
+      // Only cascade through resources that are actually in the plan.
+      if (!byId.has(next)) continue;
+      cascade.push(next);
+      for (const child of dependents.get(next) ?? []) stack.push(child);
+    }
+    if (cascade.length > 0) out.set(op.uniqueId, cascade);
+  }
+  return out;
+}
+
+/**
+ * Build a dependents map (parent → child[]) from dependsOn edges (child → parent[]).
+ * Separate function so it can be reused by diff, deploy, and tests.
+ */
+export function buildDependentsMap(
+  resources: ReadonlyArray<Construct & ResourceConstruct>,
+): Map<string, string[]> {
+  const dependents = new Map<string, string[]>();
+  for (const r of resources) {
+    for (const dep of r.dependsOn) {
+      const arr = dependents.get(dep.uniqueId) ?? [];
+      arr.push(r.uniqueId);
+      dependents.set(dep.uniqueId, arr);
+    }
+  }
+  return dependents;
+}
+
 /** The resource interface, re-exported so CLI code doesn't need a deep import. */
 export type { Resource };

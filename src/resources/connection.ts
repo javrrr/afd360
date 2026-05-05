@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource, type ResourceContext } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx } from "../client/retry.js";
+import { retryOn5xx, isNotFound } from "../client/retry.js";
 import {
   ConnectionSchema,
   type ConnectionSchemaProps,
@@ -227,20 +227,6 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
   },
 };
 
-function isNotFound(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const status = (err as { status?: unknown }).status;
-  if (status === 404) return true;
-  // tdc/afd360-training found some Connect API endpoints return 500 with a
-  // "not found" body instead of 404 (quirk B1 for DMO; generalized for safety).
-  // The body shape is unstructured — regex on its stringified form.
-  if (status === 500) {
-    const body = (err as { body?: unknown }).body;
-    const text = typeof body === "string" ? body : JSON.stringify(body ?? "");
-    if (/not\s+found/i.test(text)) return true;
-  }
-  return false;
-}
 
 interface ConnectionOpts {
   readonly dependsOn?: readonly Construct[];

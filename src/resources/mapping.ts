@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource, type ResourceContext } from "../core/construct.js";
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, errBodyIncludes } from "../client/retry.js";
+import { retryOn5xx, errBodyIncludes, isNotFound } from "../client/retry.js";
 import { pollUntil } from "../core/poll.js";
 import { DataStream } from "./data-stream.js";
 import { DMO } from "./dmo.js";
@@ -221,12 +221,6 @@ async function lookup(
     if (isNotFound(err)) return null;
     throw err;
   }
-}
-
-function isNotFound(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const status = (err as { status?: unknown }).status;
-  return status === 404 || (status === 500 && errBodyIncludes(err, "not found"));
 }
 
 interface MappingOpts {
