@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { resolve, isAbsolute } from "node:path";
 import { App } from "../core/app.js";
+import { loadDotenvFor } from "./load-dotenv.js";
 
 /**
  * Load the user's afd360.config.ts and return its default-exported App.
@@ -14,6 +15,10 @@ import { App } from "../core/app.js";
  */
 export async function loadApp(configPath: string): Promise<App> {
   const abs = isAbsolute(configPath) ? configPath : resolve(process.cwd(), configPath);
+  // Load .env / .env.local from the config file's directory *before* importing
+  // it — so `${env.X}` substitutions and any direct process.env reads inside
+  // the manifest see the right values.
+  loadDotenvFor(abs);
   const { tsImport } = (await import("tsx/esm/api")) as typeof import("tsx/esm/api");
   const mod = (await tsImport(pathToFileURL(abs).href, import.meta.url)) as {
     default?: unknown;
