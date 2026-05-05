@@ -50,3 +50,15 @@ export type {
   CalculatedInsightDefinitionType,
   PublishScheduleInterval,
 } from "./resources/calculated-insight.js";
+export { SearchIndex } from "./resources/search-index.js";
+export type {
+  SearchIndexProps,
+  SearchIndexOutput,
+  SearchIndexSearchType,
+  SearchIndexProcessingType,
+  ChunkingFieldConfig,
+  ChunkingDecorator,
+  VectorRelatedField,
+  VectorEmbeddingConfig,
+  ConfigBlock,
+} from "./resources/search-index.js";
