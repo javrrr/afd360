@@ -41,6 +41,12 @@ export interface Resource<Props, Output> {
   update(ctx: ResourceContext, id: string, props: Props): Promise<Output>;
   delete(ctx: ResourceContext, id: string): Promise<void>;
   isReady?(ctx: ResourceContext, output: Output): Promise<boolean>;
+  /**
+   * Optional — return true if the live output is in a terminal failed state
+   * that cannot be recovered via the API (e.g. DataStream `status = ERROR`).
+   * computeOp treats this as a signal to recreate rather than adopt/noop.
+   */
+  isFailed?(output: Output): boolean;
   hash(props: Props): string;
 }
 
