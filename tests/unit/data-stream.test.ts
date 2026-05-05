@@ -89,7 +89,7 @@ describe("DataStream construct", () => {
   });
 });
 
-describe("DataStreamResource.isReady (quirk A2, live-observed)", () => {
+describe("DataStreamResource.isReady (revised contract)", () => {
   const out = { recordId: "r", name: "s" };
   it("accepts uppercase ACTIVE", async () => {
     const ctx = mockCtx();
@@ -97,33 +97,42 @@ describe("DataStreamResource.isReady (quirk A2, live-observed)", () => {
     get.mockResolvedValueOnce({ name: "s", status: "ACTIVE" });
     expect(await DataStreamResource.isReady!(ctx, out)).toBe(true);
   });
-  it("accepts PROCESSING when DLO is ACTIVE (IngestApi provisioning-complete case)", async () => {
+  it("returns false on PROCESSING (keep polling)", async () => {
+    // Reversed from a prior afd360 iteration — PROCESSING for IngestApi
+    // streams is NOT a ready state; they self-transition to ERROR if data
+    // never ingests. Evidence: jaygentforce C3 on 2026-05-05.
     const ctx = mockCtx();
     const get = ctx.client.dataStreams.get as ReturnType<typeof vi.fn>;
     get.mockResolvedValueOnce({
       name: "s",
       status: "PROCESSING",
-      dataLakeObjectInfo: { status: "ACTIVE", name: "s__dll" },
-    });
-    expect(await DataStreamResource.isReady!(ctx, out)).toBe(true);
-  });
-  it("returns false when DLO is still provisioning", async () => {
-    const ctx = mockCtx();
-    const get = ctx.client.dataStreams.get as ReturnType<typeof vi.fn>;
-    get.mockResolvedValueOnce({
-      name: "s",
-      status: "PROCESSING",
-      dataLakeObjectInfo: { status: "PROCESSING" },
+      dataLakeObjectInfo: { status: "ACTIVE" },
     });
     expect(await DataStreamResource.isReady!(ctx, out)).toBe(false);
   });
-  it("throws on terminal ERROR or DELETING", async () => {
+  it("throws on terminal ERROR or DELETING with actionable message", async () => {
     const ctx = mockCtx();
     const get = ctx.client.dataStreams.get as ReturnType<typeof vi.fn>;
-    get.mockResolvedValueOnce({ name: "s", status: "ERROR" });
-    await expect(DataStreamResource.isReady!(ctx, out)).rejects.toThrow(/terminal state/);
+    get.mockResolvedValueOnce({ name: "s", status: "ERROR", lastRunStatus: "NONE" });
+    await expect(DataStreamResource.isReady!(ctx, out)).rejects.toThrow(
+      /terminal state ERROR.*afd360 destroy.*afd360 deploy/s,
+    );
     get.mockResolvedValueOnce({ name: "s", status: "DELETING" });
     await expect(DataStreamResource.isReady!(ctx, out)).rejects.toThrow(/terminal state/);
+  });
+});
+
+describe("DataStreamResource.isFailed", () => {
+  it("returns true for ERROR (any casing)", () => {
+    expect(DataStreamResource.isFailed!({ recordId: "r", name: "s", status: "ERROR" })).toBe(true);
+    expect(DataStreamResource.isFailed!({ recordId: "r", name: "s", status: "error" })).toBe(true);
+  });
+  it("returns false for healthy or transient statuses", () => {
+    for (const status of ["ACTIVE", "PROCESSING", "DELETING", undefined]) {
+      expect(
+        DataStreamResource.isFailed!({ recordId: "r", name: "s", status }),
+      ).toBe(false);
+    }
   });
 });
 

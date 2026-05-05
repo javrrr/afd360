@@ -116,6 +116,46 @@ describe("computeOp", () => {
     expect(op.kind).toBe("recreate");
   });
 
+  it("emits 'recreate' when live resource is isFailed (DataStream status=ERROR)", async () => {
+    const app = new App();
+    const stack = new Stack(app, "Rag", { targetOrg: "jaygentforce" });
+    const conn = new Connection(stack, "DocsS3", {
+      connectorType: "AwsS3",
+      label: "DocsS3",
+    });
+    const { DataStream } = await import("../../src/resources/data-stream.js");
+    const stream = new DataStream(stack, "DocsStream", {
+      connection: conn,
+      sourceObject: "KB",
+      primaryKey: { name: "Id" },
+    });
+    const state = emptyState();
+    state.resources["Rag/DocsStream"] = {
+      type: "DataStream",
+      apiName: "DocsStream_abc",
+      salesforceId: "1dsHx",
+      hash: stream.resource.hash(stream.props),
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const ctx = mockCtx();
+    // Mock dataStreams.get for read() — returns ERROR status.
+    const client = ctx.client as unknown as {
+      dataStreams: { get: ReturnType<typeof vi.fn> };
+    };
+    client.dataStreams = { get: vi.fn() };
+    client.dataStreams.get.mockResolvedValue({
+      name: "DocsStream_abc",
+      recordId: "1dsHx",
+      status: "ERROR",
+      dataLakeObjectInfo: { status: "ACTIVE", name: "KB__dll" },
+    });
+    const deployed = new Map([
+      [conn.uniqueId, { salesforceId: "0sH", apiName: "DocsS3_abc" }],
+    ]);
+    const op = await computeOp(ctx, stream, state, deployed);
+    expect(op.kind).toBe("recreate");
+  });
+
   it("emits 'create' when state references a gone resource (drift)", async () => {
     const { conn } = buildStack();
     const ctx = mockCtx();

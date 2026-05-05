@@ -353,7 +353,9 @@ Each quirk below is a specific, evidence-backed behavior of the Connect API unde
 ### A — DataStream
 
 - **A1. "Illegal argument" on create is transient.** Retry 6 × 15s (~90s total). Root cause: schema provisioning lag. Evidence: `tdc/scripts/data-cloud/provision/stream.ts:89-93`.
-- **A2. Terminal ready status is `Active`, not `RUNNING` or `READY`.** Evidence: `tdc/scripts/data-cloud/provision/stream.ts:112`.
+- **A2. Status values are UPPERCASE; ready = `ACTIVE`.** SDK types claim `"Active" | "Processing" | ...` (title-case) but the live API returns `ACTIVE`, `PROCESSING`, `ERROR`, `DELETING`. tdc's `=== "Active"` check silently never matched — compare case-insensitively. `PROCESSING` is a transient provisioning state; for IngestApi it can take minutes before flipping to `ACTIVE`, and **without ingestion traffic it can self-transition to `ERROR` on an internal TTL** (see A4). Budget ~5 min for the poll. Evidence: jaygentforce C3 on 2026-05-05; tdc "did not activate within 60s" log lines (`stream.ts:118`).
+- **A3. UI-vs-API staleness is normal for IngestApi DataStreams.** Ingestion API can report success (records accepted into DLO, queryable via queryv2) while the data stream's `lastRefreshStatus` / UI "In Progress / 0 records" lag by 10–30+ minutes. Trust the DLO / DMO queries, not the stream UI. Evidence: tdc session 2026-04-12.
+- **A4. IngestApi streams self-transition PROCESSING → ERROR without ingestion.** Create the stream, wait with no `POST /api/v1/ingest/...` traffic, and the platform eventually flips `status = ERROR` (DLO remains ACTIVE; `lastRunStatus = NONE`). Connect API exposes **no retry action** (all `/actions/{retry,resume,restart,...}` return 404; Setup UI "Retry Now" uses a different channel). `/actions/run` is 412 on ERROR. PATCH doesn't recover it. Once in ERROR, the only recovery is delete + recreate. afd360 M4 codifies this: `DataStreamResource.isFailed(output) === true` when `status === ERROR`, and `computeOp` forces a `recreate` op in that case — even when the hash matches. Evidence: jaygentforce C3 on 2026-05-05.
 
 ### B — DMO + Mapping
 

@@ -50,6 +50,18 @@ export async function computeOp(
     if (!live) {
       return { uniqueId: c.uniqueId, kind: "create", construct: c, plannedHash };
     }
+    if (c.resource.isFailed?.(live)) {
+      // Live resource is in a terminal-failed state the API can't recover
+      // (e.g. DataStream status=ERROR). Recreate unconditionally — even if
+      // the hash matches, there's no other way back to a healthy state.
+      return {
+        uniqueId: c.uniqueId,
+        kind: "recreate",
+        construct: c,
+        currentId: c.resource.idOf(live),
+        plannedHash,
+      };
+    }
     if (entry.hash === plannedHash) {
       return {
         uniqueId: c.uniqueId,
@@ -73,6 +85,17 @@ export async function computeOp(
   if (resolved && c.resource.lookupByProps) {
     const byProps = await c.resource.lookupByProps(ctx, resolved as never);
     if (byProps) {
+      // If the found resource is in a failed state, don't adopt it —
+      // recreate. Otherwise we'd adopt a broken resource and never heal.
+      if (c.resource.isFailed?.(byProps)) {
+        return {
+          uniqueId: c.uniqueId,
+          kind: "recreate",
+          construct: c,
+          currentId: c.resource.idOf(byProps),
+          plannedHash,
+        };
+      }
       return {
         uniqueId: c.uniqueId,
         kind: "adopt",

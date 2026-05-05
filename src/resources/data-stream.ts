@@ -209,28 +209,43 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
     }
   },
 
+  isFailed(output): boolean {
+    const status = (output.status ?? "").toUpperCase();
+    return status === "ERROR";
+  },
+
   async isReady(ctx, output): Promise<boolean> {
-    // Quirk A2 revisited (see memory note on DataStream status casing + IngestApi PROCESSING):
-    //   - Live API returns UPPERCASE status values ("PROCESSING", "ACTIVE", ...).
-    //     SDK types lie (title-case) and tdc's `=== "Active"` check silently never matches.
-    //   - For IngestApi streams, `status` sits at PROCESSING until data ingests —
-    //     which is out of afd360 v1 scope. The real "provisioned" signal is the
-    //     DLO reaching status === ACTIVE. Once the DLO is ACTIVE, downstream
-    //     Mapping/SearchIndex can build on top of it.
-    //   - ERROR/DELETING are terminal failures — surface immediately.
+    // DataStream readiness. Live API returns UPPERCASE values — SDK types
+    // lie (title-case). Terminal values observed:
+    //   - ACTIVE      → ready.
+    //   - PROCESSING  → not ready yet; keep polling. For IngestApi this can
+    //                   take minutes (tdc saw "did not activate within 60s"
+    //                   warnings regularly). Callers should budget ~5 min.
+    //   - ERROR       → terminal failure. Connect API offers no "Retry Now"
+    //                   (probed exhaustively — Setup UI uses a different
+    //                   channel). Surface as a throw; recovery is
+    //                   delete + redeploy.
+    //   - DELETING    → terminal, same treatment as ERROR.
+    //
+    // Historical note: a prior afd360 version treated "PROCESSING + DLO
+    // ACTIVE" as ready, on the theory that IngestApi streams only leave
+    // PROCESSING once data ingests. That was wrong — such streams eventually
+    // transition to ERROR on their own (evidence: jaygentforce C3 on
+    // 2026-05-05). Wait for ACTIVE.
     const fresh = await ctx.client.dataStreams.get(output.recordId);
     const streamStatus = ((fresh as { status?: string }).status ?? "").toUpperCase();
-    const dloStatus = (
-      (fresh.dataLakeObjectInfo as { status?: string } | undefined)?.status ?? ""
-    ).toUpperCase();
     if (streamStatus === "ERROR" || streamStatus === "DELETING") {
+      const dloStatus =
+        ((fresh.dataLakeObjectInfo as { status?: string } | undefined)?.status ?? "").toUpperCase();
+      const lastRun = (fresh as { lastRunStatus?: string }).lastRunStatus ?? "n/a";
       throw new Error(
-        `DataStream "${output.name}" entered terminal state ${streamStatus} during provisioning.`,
+        `DataStream "${output.name}" entered terminal state ${streamStatus} during provisioning ` +
+          `(DLO=${dloStatus || "n/a"}, lastRunStatus=${lastRun}). ` +
+          `The Connect API has no recovery action; run \`afd360 destroy && afd360 deploy\` ` +
+          `or check the Data Cloud Setup UI for a reason.`,
       );
     }
-    if (streamStatus === "ACTIVE") return true;
-    if (streamStatus === "PROCESSING" && dloStatus === "ACTIVE") return true;
-    return false;
+    return streamStatus === "ACTIVE";
   },
 
   hash(props): string {
@@ -302,8 +317,12 @@ export class DataStream extends Construct {
     this.dependsOn = [...autoDeps, ...(opts.dependsOn ?? [])];
 
     this.dlo = { name: `${props.sourceObject}__dll` };
-    this.readyIntervalMs = opts.readyIntervalMs ?? 2_000;
-    this.readyTimeoutMs = opts.readyTimeoutMs ?? 60_000;
+    // Defaults: 5 s × 60 attempts = 5 minutes. tdc regularly observed
+    // streams taking longer than 60 s to reach ACTIVE ("warning: did not
+    // activate within 60 s"). 5 min comfortably covers the observed tail
+    // without paying too much on fast-path IngestApi deploys.
+    this.readyIntervalMs = opts.readyIntervalMs ?? 5_000;
+    this.readyTimeoutMs = opts.readyTimeoutMs ?? 300_000;
   }
 
   resolveProps(deployed: ReadonlyMap<string, DeployedRef>): DataStreamResourceProps | null {
