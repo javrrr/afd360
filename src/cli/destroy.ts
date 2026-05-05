@@ -43,20 +43,24 @@ export function registerDestroy(program: Command): void {
 
       process.stdout.write(`${pc.bold("destroy")} ${orgAlias} (${stack.id})\n`);
 
-      for (const uid of order) {
-        const c = byId.get(uid)!;
-        const entry = state.resources[uid];
-        if (!entry?.salesforceId) {
-          process.stdout.write(`  ${pc.gray("skip")}   ${uid} (not in state)\n`);
-          continue;
+      try {
+        for (const uid of order) {
+          const c = byId.get(uid)!;
+          const entry = state.resources[uid];
+          if (!entry?.salesforceId) {
+            process.stdout.write(`  ${pc.gray("skip")}   ${uid} (not in state)\n`);
+            continue;
+          }
+          process.stdout.write(`  ${pc.red("delete")} ${uid}\n`);
+          await c.resource.delete(ctx, entry.salesforceId);
+          delete state.resources[uid];
         }
-        process.stdout.write(`  ${pc.red("delete")} ${uid}\n`);
-        await c.resource.delete(ctx, entry.salesforceId);
-        delete state.resources[uid];
+      } finally {
+        // Persist whatever progress we made even on crash, so the next
+        // destroy run doesn't re-attempt already-deleted resources.
+        state.lastDeployedAt = new Date().toISOString();
+        await writeState(orgAlias, state);
       }
-
-      state.lastDeployedAt = new Date().toISOString();
-      await writeState(orgAlias, state);
       process.stdout.write(`${pc.bold("done")}  state cleared.\n`);
     });
 }
