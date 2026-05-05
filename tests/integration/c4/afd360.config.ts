@@ -42,19 +42,33 @@ const stream = new DataStream(stack, "C4Stream", {
   sourceObject: "engineData",
   label: "C4 engine data",
   primaryKey: { name: "Id", dataType: "Text" },
-  category: "Engagement",
+  // CSV header has spaces (e.g. "Engine rpm"); platform stores them as
+  // underscores in the DLO. Picking Other here so we don't need
+  // eventDateTimeFieldName; switch to Engagement when a real time field
+  // becomes part of the test fixture.
+  category: "Other",
   refreshMode: "UPSERT",
   s3: {
     fileType: "CSV",
     importDirectory: "demo",
     fileName: "engine_data.csv",
     areHeadersIncludedInFile: "true",
+    fields: [
+      { name: "Id",               dataType: "Text",     isPrimaryKey: true },
+      { name: "Engine rpm",       dataType: "Number" },
+      { name: "Lub oil pressure", dataType: "Number" },
+      { name: "Fuel pressure",    dataType: "Number" },
+      { name: "Coolant pressure", dataType: "Number" },
+      { name: "lub oil temp",     dataType: "Number" },
+      { name: "Coolant temp",     dataType: "Number" },
+      { name: "Engine Condition", dataType: "Number" },
+    ],
   },
 });
 
 const dmo = new DMO(stack, "C4EngineTelemetry", {
   label: "C4 Engine Telemetry",
-  category: "Engagement",
+  category: "Other",
   fields: [
     { name: "Id",               label: "Id",               dataType: "Text",     isPrimaryKey: true },
     { name: "EngineRpm",        label: "Engine RPM",       dataType: "Number" },
@@ -64,12 +78,12 @@ const dmo = new DMO(stack, "C4EngineTelemetry", {
     { name: "LubOilPressure",   label: "Lub Oil Pressure", dataType: "Number" },
     { name: "LubOilTemp",       label: "Lub Oil Temp",     dataType: "Number" },
     { name: "EngineCondition",  label: "Engine Condition", dataType: "Number" },
-    { name: "TimeStamp",        label: "Time Stamp",       dataType: "DateTime" },
   ],
 });
 
-// Field mappings: DLO field names (from sourceFields, snake_case + __c) →
-// DMO field names (CamelCase + __c). Platform auto-suffixes both sides.
+// Field mappings: DLO field names (underscore form + __c) → DMO field
+// names (CamelCase + __c). The DLO side mirrors the DataStream's fields
+// (spaces→underscores); the DMO side reflects the authored field names.
 new Mapping(stack, "C4EngineMapping", {
   source: stream,
   target: dmo,
@@ -82,7 +96,6 @@ new Mapping(stack, "C4EngineMapping", {
     { source: "Lub_oil_pressure__c", target: "LubOilPressure__c" },
     { source: "lub_oil_temp__c",     target: "LubOilTemp__c" },
     { source: "Engine_Condition__c", target: "EngineCondition__c" },
-    { source: "Time_Stamp__c",       target: "TimeStamp__c" },
   ],
 });
 

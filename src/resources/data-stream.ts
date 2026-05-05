@@ -27,6 +27,25 @@ export interface DataStreamPrimaryKey {
 }
 
 /**
+ * A single column in the source file or feed. For AwsS3 CSV, `name` is the
+ * **literal CSV header** (case-sensitive, may contain spaces). `dloName` is
+ * how the column will be stored in the DLO — spaces aren't allowed, so
+ * underscore-substitute. The platform auto-prefixes __c on the DLO side.
+ */
+export interface SourceFieldMapping {
+  /** CSV column header as it appears in the file (may contain spaces). */
+  readonly name: string;
+  /** DLO field name — no spaces, no __c suffix (platform appends). Defaults to name with spaces→underscores. */
+  readonly dloName?: string;
+  /** Text | Number | DateTime | Date | Url | Email | Boolean. */
+  readonly dataType: string;
+  /** DateTime-only: format string e.g. `yyyy/MM/dd HH:mm:ss`. */
+  readonly format?: string;
+  /** True for the DLO primary-key column. Exactly one per stream. */
+  readonly isPrimaryKey?: boolean;
+}
+
+/**
  * AwsS3-specific advanced attributes. Required when the parent connection is
  * AwsS3; ignored for other connectors.
  */
@@ -41,6 +60,17 @@ export interface AwsS3StreamAttributes {
   readonly areHeadersIncludedInFile?: "true" | "false";
   /** Optional delimiter override — default is auto-detect. */
   readonly delimiter?: string;
+  /**
+   * Source columns and their mapping into the DLO. REQUIRED for AwsS3: the
+   * platform does not auto-discover columns on create (it reads the CSV and
+   * rejects with "CSV doesn't have source field X" for any unexpected name,
+   * and "Mappings list cannot be empty" if mappings are missing).
+   *
+   * For the DLO side (after __c suffix), the platform will normalize spaces
+   * to underscores and append __c. Authored `dloName` must not contain
+   * spaces or __c.
+   */
+  readonly fields: ReadonlyArray<SourceFieldMapping>;
 }
 
 export interface DataStreamProps {
@@ -58,8 +88,13 @@ export interface DataStreamProps {
   readonly dataSpace?: string;
   readonly primaryKey: DataStreamPrimaryKey;
   /**
-   * AwsS3-only: where to find the data. Required when the parent
-   * connection's connectorType is AwsS3; validated at construct time.
+   * REQUIRED when category = "Engagement". DLO field name (underscore form,
+   * no __c) that carries the event time. Not used for Profile / Other.
+   */
+  readonly eventDateTimeFieldName?: string;
+  /**
+   * AwsS3-only: where to find the data + column definitions. Required when
+   * the parent connection's connectorType is AwsS3; validated at construct time.
    */
   readonly s3?: AwsS3StreamAttributes;
 }
@@ -85,6 +120,7 @@ export interface DataStreamResourceProps {
   readonly refreshMode: "UPSERT" | "REPLACE" | "APPEND";
   readonly dataSpace: string;
   readonly primaryKey: DataStreamPrimaryKey;
+  readonly eventDateTimeFieldName?: string;
   readonly s3?: AwsS3StreamAttributes;
 }
 
@@ -127,26 +163,69 @@ function buildAwsS3Payload(p: DataStreamResourceProps): unknown {
   if (!p.s3) {
     throw new Error(
       `DataStream "${p.name}" has connectorType=AwsS3 but no s3 attributes. ` +
-        `Provide { fileType, fileName, importDirectory?, ... }.`,
+        `Provide { fileType, fileName, fields, ... }.`,
     );
   }
   const s3 = p.s3;
-  // Shape modeled from the SDK's DataStreamConnectorInput discriminated union
-  // (schemas.d.ts): the create-time discriminator is "DataConnector" (the
-  // catch-all for the Data Connector Framework family — AwsS3, Snowflake,
-  // AzureBlob, Sftp, etc.), NOT the specific connector name. The specific
-  // name (AwsS3) goes on `connectorDetails.type`. Quirky but load-bearing:
-  // GET responses echo back `connectorType: "AwsS3"`, but POSTing that
-  // verbatim gets `Could not resolve type id 'AwsS3' into a subtype`.
-  // Evidence: jaygentforce C4 deploy 2026-05-05.
+  if (!s3.fields.length) {
+    throw new Error(
+      `DataStream "${p.name}": s3.fields cannot be empty — the Connect API ` +
+        `will reject the create with "Mappings list cannot be empty".`,
+    );
+  }
+  const pkFields = s3.fields.filter((f) => f.isPrimaryKey);
+  if (pkFields.length !== 1) {
+    throw new Error(
+      `DataStream "${p.name}": s3.fields must contain exactly one isPrimaryKey field (got ${pkFields.length}).`,
+    );
+  }
+  const dloNameFor = (f: SourceFieldMapping): string =>
+    f.dloName ?? f.name.replace(/\s+/g, "_");
+
+  // Evidence from jaygentforce probes 2026-05-05 (see feedback notes on
+  // DataStream AwsS3 shape): the Connect API for S3 streams requires:
+  //   - connectorInfo.connectorType: "DataConnector" (not "AwsS3" — that's
+  //     a GET-response echo, rejected on POST).
+  //   - connectorInfo.connectorDetails: { name } ONLY — no `type` field.
+  //   - datasource: `AwsS3_${connectionName}` (platform prepends AwsS3_).
+  //   - sourceFields[]: literal CSV header names (spaces preserved).
+  //   - mappings[]: per-column CSV → DLO mapping (sourceFieldLabel is the
+  //     CSV name, targetFieldName is the DLO column, targetFieldReturntype
+  //     mirrors the source datatype).
+  //   - dataLakeObjectInfo.dataLakeFieldInputRepresentations[]: every
+  //     target DLO column pre-declared, or the API rejects with
+  //     "targetField X in mapping is not present in DataLakeObject".
+  //   - refreshConfig.frequency: { frequencyType: "None" } for on-demand streams.
+  //   - Engagement category needs eventDateTimeFieldName; Profile/Other don't.
+  const dlo: Record<string, unknown> = {
+    label: p.sourceObject,
+    name: `${p.sourceObject}__dll`,
+    category: p.category,
+    dataspaceInfo: [{ name: p.dataSpace }],
+    dataLakeFieldInputRepresentations: s3.fields.map((f) => ({
+      name: dloNameFor(f),
+      label: f.name,
+      dataType: f.dataType,
+      isPrimaryKey: !!f.isPrimaryKey,
+    })),
+  };
+  if (p.category === "Engagement") {
+    if (!p.eventDateTimeFieldName) {
+      throw new Error(
+        `DataStream "${p.name}": category=Engagement requires eventDateTimeFieldName.`,
+      );
+    }
+    dlo["eventDateTimeFieldName"] = p.eventDateTimeFieldName;
+  }
+
   return {
     name: p.name,
     label: p.label,
-    datasource: p.connectionName,
+    datasource: `AwsS3_${p.connectionName}`,
     datastreamType: "CONNECTORSFRAMEWORK",
     connectorInfo: {
       connectorType: "DataConnector",
-      connectorDetails: { name: p.connectionName, type: "AwsS3" },
+      connectorDetails: { name: p.connectionName },
     },
     advancedAttributes: {
       fileType: s3.fileType,
@@ -155,14 +234,21 @@ function buildAwsS3Payload(p: DataStreamResourceProps): unknown {
       areHeadersIncludedInFile: s3.areHeadersIncludedInFile ?? "true",
       ...(s3.delimiter ? { delimiter: s3.delimiter } : {}),
     },
-    dataLakeObjectInfo: {
-      label: p.sourceObject,
-      name: `${p.sourceObject}__dll`,
-      category: p.category,
-      dataspaceInfo: [{ name: p.dataSpace }],
-      dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
+    sourceFields: s3.fields.map((f) => {
+      const sf: Record<string, unknown> = { name: f.name, dataType: f.dataType };
+      if (f.format) sf["format"] = f.format;
+      return sf;
+    }),
+    mappings: s3.fields.map((f) => ({
+      sourceFieldLabel: f.name,
+      targetFieldName: dloNameFor(f),
+      targetFieldReturntype: f.dataType,
+    })),
+    dataLakeObjectInfo: dlo,
+    refreshConfig: {
+      refreshMode: p.refreshMode,
+      frequency: { frequencyType: "None" },
     },
-    refreshConfig: { refreshMode: p.refreshMode },
   };
 }
 
@@ -406,7 +492,13 @@ export class DataStream extends Construct {
         `DataStream "${id}": s3 attributes are only meaningful for AwsS3 connections.`,
       );
     }
-    const baseProps = {
+    if (category === "Engagement" && !props.eventDateTimeFieldName) {
+      throw new Error(
+        `DataStream "${id}": category="Engagement" requires eventDateTimeFieldName. ` +
+          `Name a DLO field (underscore form, no __c) that holds the event timestamp.`,
+      );
+    }
+    const baseProps: DataStreamResourceProps = {
       connectorType,
       // connectionName gets resolved from state at deploy time; placeholder here.
       connectionName: "",
@@ -418,7 +510,14 @@ export class DataStream extends Construct {
       dataSpace,
       primaryKey: props.primaryKey,
     };
-    this.props = props.s3 ? { ...baseProps, s3: props.s3 } : baseProps;
+    let resolvedProps: DataStreamResourceProps = baseProps;
+    if (props.eventDateTimeFieldName) {
+      resolvedProps = { ...resolvedProps, eventDateTimeFieldName: props.eventDateTimeFieldName };
+    }
+    if (props.s3) {
+      resolvedProps = { ...resolvedProps, s3: props.s3 };
+    }
+    this.props = resolvedProps;
     // Auto-wire dependency on the parent Connection (and ConnectionSchema if
     // present) so the deploy runner orders us after both.
     const autoDeps: Construct[] = [props.connection];

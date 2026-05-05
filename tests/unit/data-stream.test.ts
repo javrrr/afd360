@@ -171,21 +171,30 @@ describe("DataStream AwsS3 path", () => {
       connection: conn,
       sourceObject: "KB",
       primaryKey: { name: "Id" },
-      s3: { fileType: "CSV", fileName: "x.csv" },
+      s3: {
+        fileType: "CSV",
+        fileName: "x.csv",
+        fields: [{ name: "id", dataType: "Text", isPrimaryKey: true }],
+      },
     })).toThrow(/only meaningful for AwsS3/);
   });
 
-  it("builds CONNECTORSFRAMEWORK payload with advancedAttributes", async () => {
+  it("builds CONNECTORSFRAMEWORK payload with datasource prefix + sourceFields + mappings", async () => {
     const { stack, conn } = buildS3Fixture();
     const stream = new DataStream(stack, "Stream", {
       connection: conn,
       sourceObject: "orders",
-      primaryKey: { name: "id" },
+      primaryKey: { name: "Id" },
       s3: {
         fileType: "CSV",
         importDirectory: "demo",
         fileName: "orders.csv",
         areHeadersIncludedInFile: "true",
+        fields: [
+          { name: "Id", dataType: "Text", isPrimaryKey: true },
+          { name: "Engine rpm", dataType: "Number" },
+          { name: "Time Stamp", dataType: "DateTime", format: "yyyy/MM/dd HH:mm:ss" },
+        ],
       },
     });
     const ctx = mockCtx();
@@ -195,21 +204,47 @@ describe("DataStream AwsS3 path", () => {
       ...stream.props,
       connectionName: "S3_resolved",
     });
-    expect(create).toHaveBeenCalledTimes(1);
     const body = create.mock.calls[0]![0] as Record<string, unknown>;
     expect(body["datastreamType"]).toBe("CONNECTORSFRAMEWORK");
+    // datasource gets the AwsS3_ prefix — the platform expects the prefixed
+    // value; bare connection name fails with no-matching-file errors.
+    expect(body["datasource"]).toBe("AwsS3_S3_resolved");
     expect(body["connectorInfo"]).toMatchObject({
-      // DataConnector (NOT AwsS3) is the create-time discriminator — see
-      // SDK's DataStreamConnectorInput discriminated union. GET responses
-      // echo back "AwsS3" but POSTing that gets a Jackson subtype error.
       connectorType: "DataConnector",
-      connectorDetails: { name: "S3_resolved", type: "AwsS3" },
+      // no `type` field — adding it gets JSON_PARSER_ERROR "Unrecognized field type"
+      connectorDetails: { name: "S3_resolved" },
     });
-    expect(body["advancedAttributes"]).toMatchObject({
-      fileType: "CSV",
-      fileName: "orders.csv",
-      importDirectory: "demo",
-    });
+    // sourceFields: CSV-native names preserved (spaces intact).
+    expect(body["sourceFields"]).toEqual([
+      { name: "Id", dataType: "Text" },
+      { name: "Engine rpm", dataType: "Number" },
+      { name: "Time Stamp", dataType: "DateTime", format: "yyyy/MM/dd HH:mm:ss" },
+    ]);
+    // mappings: spaces → underscores on the DLO side (auto-derived dloName).
+    expect(body["mappings"]).toEqual([
+      { sourceFieldLabel: "Id", targetFieldName: "Id", targetFieldReturntype: "Text" },
+      { sourceFieldLabel: "Engine rpm", targetFieldName: "Engine_rpm", targetFieldReturntype: "Number" },
+      { sourceFieldLabel: "Time Stamp", targetFieldName: "Time_Stamp", targetFieldReturntype: "DateTime" },
+    ]);
+    // DLO fields pre-declared — required so mappings' targetFieldName can resolve.
+    expect((body["dataLakeObjectInfo"] as Record<string, unknown>)["dataLakeFieldInputRepresentations"]).toHaveLength(3);
+    // One-shot-frequency default.
+    expect((body["refreshConfig"] as Record<string, unknown>)["frequency"]).toEqual({ frequencyType: "None" });
+  });
+
+  it("requires eventDateTimeFieldName when category is Engagement", () => {
+    const { stack, conn } = buildS3Fixture();
+    expect(() => new DataStream(stack, "Bad", {
+      connection: conn,
+      sourceObject: "x",
+      category: "Engagement",
+      primaryKey: { name: "id" },
+      s3: {
+        fileType: "CSV",
+        fileName: "x.csv",
+        fields: [{ name: "id", dataType: "Text", isPrimaryKey: true }],
+      },
+    })).toThrow(/Engagement.*eventDateTimeFieldName/);
   });
 });
 
