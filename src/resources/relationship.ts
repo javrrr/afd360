@@ -210,15 +210,21 @@ export const RelationshipResource: Resource<
         { dataspace: props.dataSpace },
       ),
     );
-    // Response carries `{ relationships: [...] }` with the created entries.
+    // Defensive: the SDK returns `undefined` for 204 responses, and the
+    // Connect API occasionally returns 201 with a body but with the SDK's
+    // JSON path returning an unexpected shape. Either way, fall back to a
+    // listRelationships lookup — the relationship is already created.
     const rels =
-      (result as { relationships?: Array<unknown> }).relationships ?? [];
-    if (rels.length === 0) {
-      throw new Error(
-        `createRelationships returned no relationships for ${props.sourceObjectName}`,
-      );
+      (result as { relationships?: Array<unknown> } | undefined)?.relationships ?? [];
+    if (rels.length > 0) {
+      return toOutput(rels[0] as never, props);
     }
-    return toOutput(rels[0] as never, props);
+    const hydrated = await RelationshipResource.lookupByProps!(ctx, props);
+    if (hydrated) return hydrated;
+    throw new Error(
+      `createRelationships for ${props.sourceObjectName} succeeded but the ` +
+        `response was empty and lookup could not find the created relationship.`,
+    );
   },
 
   async update(_ctx, _id, _props): Promise<RelationshipOutput> {
