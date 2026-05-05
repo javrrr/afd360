@@ -47,6 +47,14 @@ export interface Resource<Props, Output> {
    * computeOp treats this as a signal to recreate rather than adopt/noop.
    */
   isFailed?(output: Output): boolean;
+  /**
+   * Optional drift check used during adoption. If `lookupByProps` returns
+   * a match, computeOp calls `matchesAuthored(live, resolvedProps)` before
+   * deciding to adopt. Returning false forces a recreate — useful when the
+   * live resource has the same key/name but drifts on a material field
+   * (e.g. a DMO's category). Default (when undefined): trust the match.
+   */
+  matchesAuthored?(live: Output, props: Props): boolean;
   hash(props: Props): string;
 }
 

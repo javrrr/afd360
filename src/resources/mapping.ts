@@ -1,8 +1,9 @@
 import type { Data360Client } from "data-360-sdk";
-import { Construct, type Resource } from "../core/construct.js";
+import { Construct, type Resource, type ResourceContext } from "../core/construct.js";
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn5xx, errBodyIncludes } from "../client/retry.js";
+import { pollUntil } from "../core/poll.js";
 import { DataStream } from "./data-stream.js";
 import { DMO } from "./dmo.js";
 
@@ -81,6 +82,12 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
   },
 
   async create(ctx, props): Promise<MappingOutput> {
+    // tdc lesson #4: after a stream creates, its DLO can take 5-60s before
+    // it's queryable for mapping. createMappings without this wait yields
+    // a 400 with a confusing "source object not found" / similar error.
+    // Gate on dataLakeObjects.get() returning fields.
+    await waitForDloDiscoverable(ctx, props.sourceDloName);
+
     const body = {
       sourceEntityDeveloperName: props.sourceDloName,
       targetEntityDeveloperName: props.targetDmoName,
@@ -133,6 +140,46 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
     return hashProps({ ...props, fieldMappings: normalizedFields });
   },
 };
+
+/**
+ * Poll until `dataLakeObjects.get(name)` returns a DLO with at least one
+ * non-system field populated — that's the signal from the platform that
+ * the DLO has materialized enough for Mapping to reference it.
+ *
+ * tdc's lesson: an S3 stream create returns 201 + status=PROCESSING, and
+ * the DLO appears in listings quickly, but getting its fields is subject
+ * to a lag of 5-60s. Mapping create will fail during that window.
+ *
+ * Defaults: 5s × 36 = 3 min budget — covers the long tail tdc observed.
+ */
+async function waitForDloDiscoverable(
+  ctx: ResourceContext,
+  dloName: string,
+  opts: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<void> {
+  await pollUntil<true>(
+    async () => {
+      try {
+        const raw = await ctx.client.dataLakeObjects.get(dloName);
+        // The SDK sometimes wraps the response in { dataLakeObjects: [...] }
+        // (tdc-observed behavior); handle both shapes defensively.
+        const dlo =
+          (raw as { dataLakeObjects?: Array<unknown> }).dataLakeObjects?.[0] ??
+          raw;
+        const fields =
+          (dlo as { fields?: unknown[]; dataLakeFieldInfoRepresentation?: unknown[] })
+            .fields ??
+          (dlo as { dataLakeFieldInfoRepresentation?: unknown[] })
+            .dataLakeFieldInfoRepresentation ??
+          [];
+        return fields.length > 0 ? true : null;
+      } catch {
+        return null;
+      }
+    },
+    { intervalMs: opts.intervalMs ?? 5_000, timeoutMs: opts.timeoutMs ?? 180_000 },
+  );
+}
 
 async function lookup(
   ctx: { client: Data360Client },

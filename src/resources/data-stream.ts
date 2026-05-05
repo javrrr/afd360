@@ -344,7 +344,18 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
       backoff: 1,
       jitter: 0,
     });
-    const name = result.name;
+    // Platform quirk: for AwsS3 (DataConnector family), the stream's dev
+    // name is derived from `dataLakeObjectInfo.name` (minus __dll), NOT the
+    // authored `name` we sent. Response body may still echo the authored
+    // name, but GET /ssot/data-streams/{authoredName} then returns "not
+    // found". Key state on the DLO-derived name for AwsS3, and the response
+    // name for IngestApi. See memory note feedback_s3-stream-devname-from-dlo.md.
+    const dloName = result.dataLakeObjectInfo?.name;
+    const derivedName = dloName?.endsWith("__dll") ? dloName.slice(0, -"__dll".length) : undefined;
+    const name =
+      props.connectorType === "AwsS3" && derivedName
+        ? derivedName
+        : result.name;
     if (!name) {
       throw new Error(
         `dataStreams.create returned a DataStreamRepresentation with no name — cannot key state.`,
@@ -355,7 +366,6 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
     if (result.label !== undefined) out.label = result.label;
     const status = (result as { status?: string }).status;
     if (status !== undefined) out.status = status;
-    const dloName = result.dataLakeObjectInfo?.name;
     if (dloName !== undefined) out.dloName = dloName;
     return out;
   },

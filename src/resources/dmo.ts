@@ -162,6 +162,22 @@ export const DmoResource: Resource<DmoResourceProps, DmoOutput> = {
     return Boolean(fresh?.dataSpaceName);
   },
 
+  matchesAuthored(live, props): boolean {
+    // Detect drift when the platform's live DMO category differs from what
+    // the manifest authors (e.g. an old Engagement DMO adopted into an Other
+    // manifest). Without this, adopt silently stamps the wrong DMO in state
+    // and the next Mapping create fails with "Cannot map DLO to DMO" type
+    // mismatch.
+    //
+    // Live category returns UPPERCASE ("ENGAGEMENT") but authored is title-
+    // case ("Engagement"). Compare case-insensitively.
+    const liveCat = (live.category ?? "").toLowerCase();
+    const wantCat = (props.category ?? "").toLowerCase();
+    if (liveCat && wantCat && liveCat !== wantCat) return false;
+    if (live.dataSpaceName && live.dataSpaceName !== props.dataSpace) return false;
+    return true;
+  },
+
   hash(props): string {
     return hashProps(props);
   },

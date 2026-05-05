@@ -100,6 +100,40 @@ describe("DmoResource.isReady (quirk B2)", () => {
   });
 });
 
+describe("DmoResource.matchesAuthored (drift check)", () => {
+  const props = {
+    name: "X",
+    label: "X",
+    category: "Other" as const,
+    dataSpace: "default",
+    fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+  };
+  it("accepts case-insensitive category match", () => {
+    expect(
+      DmoResource.matchesAuthored!(
+        { name: "X__dlm", category: "OTHER", dataSpaceName: "default" },
+        props,
+      ),
+    ).toBe(true);
+  });
+  it("rejects category drift (ENGAGEMENT vs Other)", () => {
+    expect(
+      DmoResource.matchesAuthored!(
+        { name: "X__dlm", category: "ENGAGEMENT", dataSpaceName: "default" },
+        props,
+      ),
+    ).toBe(false);
+  });
+  it("rejects dataSpace drift", () => {
+    expect(
+      DmoResource.matchesAuthored!(
+        { name: "X__dlm", category: "OTHER", dataSpaceName: "other_space" },
+        props,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("DmoResource.create payload shape", () => {
   it("matches tdc's proven shape: plain name/label, fields with isPrimaryKey", async () => {
     const ctx = mockCtx();

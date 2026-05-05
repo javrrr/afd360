@@ -32,6 +32,12 @@ function mockCtx(): ResourceContext {
         createMappings: vi.fn(),
         listMappings: vi.fn(),
       },
+      // DLO get is stubbed to return a ready DLO immediately so the
+      // discoverability poll in Mapping.create doesn't block unit tests.
+      // Real S3 / IngestApi runs wait for fields to materialize.
+      dataLakeObjects: {
+        get: vi.fn().mockResolvedValue({ fields: [{ name: "Id" }] }),
+      },
     } as unknown as ResourceContext["client"],
     session: {
       alias: "jaygentforce",

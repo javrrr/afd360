@@ -169,6 +169,14 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
     return (output.status ?? "").toLowerCase() === "error";
   },
 
+  matchesAuthored(live, props): boolean {
+    // Only compare connectorType — changing a connection's connectorType is
+    // a fundamentally different resource. Credentials and parameters are
+    // masked on GET so we can't compare them; drift there can only be
+    // caught via state-hash on subsequent deploys.
+    return live.connectorType === props.connectorType;
+  },
+
   async create(ctx, props): Promise<ConnectionOutput> {
     if (!props.name) {
       throw new Error(
