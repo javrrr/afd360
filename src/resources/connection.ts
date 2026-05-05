@@ -63,6 +63,14 @@ export interface ConnectionOutput {
   readonly name: string;
   readonly label?: string;
   readonly connectorType: string;
+  /**
+   * Runtime status. Observed values (case-insensitive):
+   *   Processing — provisioning / auth handshake running
+   *   Active     — healthy
+   *   Error      — auth failed or other unrecoverable state
+   * Title-case from the Connect API, unlike DataStream which is UPPERCASE.
+   */
+  readonly status?: string;
 }
 
 /**
@@ -103,6 +111,25 @@ function toParamArray(kv: ConnectionParams | undefined): Array<{ paramName: stri
   return Object.entries(kv).map(([paramName, value]) => ({ paramName, value }));
 }
 
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+function toOutput(raw: {
+  id: string;
+  name: string;
+  label?: string;
+  connectorType: string;
+  status?: string;
+}): ConnectionOutput {
+  const out: Mutable<ConnectionOutput> = {
+    id: raw.id,
+    name: raw.name,
+    connectorType: raw.connectorType,
+  };
+  if (raw.label !== undefined) out.label = raw.label;
+  if (raw.status !== undefined) out.status = raw.status;
+  return out;
+}
+
 export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
   type: "Connection",
   surface: "connect",
@@ -114,12 +141,7 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
   async read(ctx, salesforceId): Promise<ConnectionOutput | null> {
     try {
       const result = await ctx.client.connections.get(salesforceId);
-      return {
-        id: result.id,
-        name: result.name,
-        label: result.label,
-        connectorType: result.connectorType,
-      };
+      return toOutput(result);
     } catch (err) {
       if (isNotFound(err)) return null;
       throw err;
@@ -137,12 +159,14 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
       devName ? c.name === devName : c.label === props.label,
     );
     if (!match) return null;
-    return {
-      id: match.id,
-      name: match.name,
-      label: match.label,
-      connectorType: match.connectorType,
-    };
+    return toOutput(match);
+  },
+
+  isFailed(output): boolean {
+    // Case-insensitive to match the title-case observed for Connection
+    // (vs UPPERCASE for DataStream). "Error" means auth failed or the
+    // platform gave up — no API-side recovery exists, so force a recreate.
+    return (output.status ?? "").toLowerCase() === "error";
   },
 
   async create(ctx, props): Promise<ConnectionOutput> {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { App, Stack } from "../../src/core/app.js";
-import { Connection } from "../../src/resources/connection.js";
+import { Connection, ConnectionResource } from "../../src/resources/connection.js";
 import { ConnectionSchemaResource } from "../../src/resources/connection-schema.js";
 
 describe("Connection construct", () => {
@@ -91,6 +91,41 @@ describe("Connection construct", () => {
     ]);
     const schemaEntry = plan.resources.find((r) => r.type === "ConnectionSchema")!;
     expect(schemaEntry.dependsOn).toEqual(["RagDemo/Docs"]);
+  });
+});
+
+describe("ConnectionResource.isFailed", () => {
+  it("returns true for status 'Error' (title-case, as returned by Connect API)", () => {
+    expect(
+      ConnectionResource.isFailed({
+        id: "0xH",
+        name: "X",
+        connectorType: "SNOWFLAKE",
+        status: "Error",
+      }),
+    ).toBe(true);
+  });
+  it("is case-insensitive", () => {
+    expect(
+      ConnectionResource.isFailed({
+        id: "0xH",
+        name: "X",
+        connectorType: "AwsS3",
+        status: "ERROR",
+      }),
+    ).toBe(true);
+  });
+  it("returns false for Active / Processing / missing", () => {
+    for (const status of ["Active", "Processing", undefined]) {
+      expect(
+        ConnectionResource.isFailed({
+          id: "0xH",
+          name: "X",
+          connectorType: "AwsS3",
+          status,
+        }),
+      ).toBe(false);
+    }
   });
 });
 
