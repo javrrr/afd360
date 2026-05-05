@@ -43,3 +43,10 @@ export type {
   RelationshipCardinality,
   RelationshipOwner,
 } from "./resources/relationship.js";
+export { CalculatedInsight } from "./resources/calculated-insight.js";
+export type {
+  CalculatedInsightProps,
+  CalculatedInsightOutput,
+  CalculatedInsightDefinitionType,
+  PublishScheduleInterval,
+} from "./resources/calculated-insight.js";
