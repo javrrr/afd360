@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn, retryOn5xx, errBodyIncludes, is5xx } from "../client/retry.js";
+import { retryOn, retryOn5xx, errBodyIncludes, is5xx, isNotFound } from "../client/retry.js";
 import { Connection } from "./connection.js";
 import { ConnectionSchema } from "./connection-schema.js";
 
@@ -483,14 +483,6 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
 };
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-
-function isNotFound(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const status = (err as { status?: unknown }).status;
-  if (status === 404) return true;
-  if (status === 500 && errBodyIncludes(err, "not found")) return true;
-  return false;
-}
 
 interface DataStreamOpts {
   readonly dependsOn?: readonly Construct[];

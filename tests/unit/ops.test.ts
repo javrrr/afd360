@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { App, Stack } from "../../src/core/app.js";
 import { Connection } from "../../src/resources/connection.js";
-import { computeOp } from "../../src/cli/ops.js";
+import {
+  computeOp,
+  computeBlastRadius,
+  buildDependentsMap,
+  type Op,
+} from "../../src/cli/ops.js";
 import type { StackState } from "../../src/core/state.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
@@ -173,5 +178,77 @@ describe("computeOp", () => {
     };
     const op = await computeOp(ctx, conn, state, new Map());
     expect(op.kind).toBe("create");
+  });
+});
+
+describe("computeBlastRadius", () => {
+  function mkOp(uniqueId: string, kind: Op["kind"]): Op {
+    return {
+      uniqueId,
+      kind,
+      construct: { uniqueId } as never,
+      plannedHash: "sha256:x",
+    };
+  }
+
+  it("returns empty map when no recreates", () => {
+    const ops = [mkOp("A", "create"), mkOp("B", "noop")];
+    const deps = new Map([["A", ["B"]]]);
+    expect(computeBlastRadius(ops, deps).size).toBe(0);
+  });
+
+  it("lists direct dependents for a single-level cascade", () => {
+    const ops = [mkOp("A", "recreate"), mkOp("B", "create"), mkOp("C", "noop")];
+    const deps = new Map([["A", ["B", "C"]]]);
+    const radius = computeBlastRadius(ops, deps);
+    expect(radius.get("A")).toEqual(expect.arrayContaining(["B", "C"]));
+    expect(radius.get("A")).toHaveLength(2);
+  });
+
+  it("walks transitive dependents (parent → child → grandchild)", () => {
+    const ops = [
+      mkOp("Schema", "recreate"),
+      mkOp("Stream", "create"),
+      mkOp("DMO", "noop"),
+      mkOp("Mapping", "create"),
+    ];
+    const deps = new Map([
+      ["Schema", ["Stream"]],
+      ["Stream", ["DMO"]],
+      ["DMO", ["Mapping"]],
+    ]);
+    const radius = computeBlastRadius(ops, deps);
+    expect(radius.get("Schema")).toEqual(
+      expect.arrayContaining(["Stream", "DMO", "Mapping"]),
+    );
+    expect(radius.get("Schema")).toHaveLength(3);
+  });
+
+  it("stops at resources not in the plan (external refs)", () => {
+    const ops = [mkOp("A", "recreate"), mkOp("B", "create")];
+    const deps = new Map([
+      ["A", ["B", "NotInPlan"]],
+      ["NotInPlan", ["Would-be-grandchild"]],
+    ]);
+    const radius = computeBlastRadius(ops, deps);
+    expect(radius.get("A")).toEqual(["B"]);
+  });
+
+  it("handles a recreate with no dependents", () => {
+    const ops = [mkOp("Solo", "recreate")];
+    const radius = computeBlastRadius(ops, new Map());
+    expect(radius.size).toBe(0);
+  });
+});
+
+describe("buildDependentsMap", () => {
+  it("inverts dependsOn edges", () => {
+    const stack = new Stack(new App(), "S", { targetOrg: "x" });
+    const parent = new Connection(stack, "Parent", { connectorType: "AwsS3", label: "P" });
+    const child = new Connection(stack, "Child", { connectorType: "AwsS3", label: "C" });
+    // Manually assign dependsOn to avoid reaching into construct internals
+    (child as unknown as { dependsOn: readonly unknown[] }).dependsOn = [parent];
+    const deps = buildDependentsMap([parent, child] as never);
+    expect(deps.get(parent.uniqueId)).toEqual([child.uniqueId]);
   });
 });

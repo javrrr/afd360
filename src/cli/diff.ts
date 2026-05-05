@@ -8,7 +8,13 @@ import { topologicalSort } from "../core/graph.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
 import type { ResourceConstruct, DeployedRef } from "../core/app.js";
-import { computeOp, summarizeOps, type OpKind } from "./ops.js";
+import {
+  computeOp,
+  summarizeOps,
+  buildDependentsMap,
+  computeBlastRadius,
+  type OpKind,
+} from "./ops.js";
 
 const DEFAULT_CONFIG = "afd360.config.ts";
 
@@ -68,6 +74,25 @@ export function registerDiff(program: Command): void {
         process.stdout.write(`  ${LABELS[op.kind](tag)} ${c.uniqueId}\n`);
       }
       process.stdout.write(`  ${summarizeOps(ops)}\n`);
+
+      // Blast-radius: v1 policy recreates all descendants when a parent
+      // recreates. Surface the cascade so the user sees the real scope of a
+      // drift before they run deploy.
+      const dependents = buildDependentsMap(resources);
+      const cascades = computeBlastRadius(ops, dependents);
+      if (cascades.size > 0) {
+        process.stdout.write("\n");
+        for (const [parent, children] of cascades) {
+          process.stdout.write(
+            pc.red(
+              `  !! ${parent} — recreate will also recreate ${children.length} downstream resource${children.length === 1 ? "" : "s"}:\n`,
+            ),
+          );
+          for (const child of children) {
+            process.stdout.write(pc.red(`       ${child}\n`));
+          }
+        }
+      }
     });
 }
 

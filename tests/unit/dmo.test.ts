@@ -178,3 +178,35 @@ describe("DmoResource.create payload shape", () => {
     expect(out.name).toBe("Foo__dlm");
   });
 });
+
+describe("DmoResource.delete — already-gone tolerance", () => {
+  it("swallows 404 from the pre-check GET (already deleted)", async () => {
+    const ctx = mockCtx();
+    (ctx.client.dataModelObjects.get as ReturnType<typeof vi.fn>).mockRejectedValue({ status: 404 });
+    await expect(DmoResource.delete(ctx, "Gone__dlm")).resolves.toBeUndefined();
+    // delete should NOT be called when the pre-check confirms it's gone.
+    expect(ctx.client.dataModelObjects.delete).not.toHaveBeenCalled();
+  });
+
+  it("swallows 500 'not found' body from the DELETE itself", async () => {
+    const ctx = mockCtx();
+    (ctx.client.dataModelObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({ name: "X__dlm" });
+    (ctx.client.dataModelObjects.delete as ReturnType<typeof vi.fn>).mockRejectedValue({
+      status: 500,
+      body: '[{"message":"DMO not found"}]',
+    });
+    await expect(DmoResource.delete(ctx, "X__dlm")).resolves.toBeUndefined();
+  });
+
+  it("re-verifies via GET on opaque 500 and treats verified-gone as success (quirk: DMO DELETE 500 on already-gone)", async () => {
+    const ctx = mockCtx();
+    (ctx.client.dataModelObjects.get as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ name: "X__dlm" })  // pre-check: present
+      .mockRejectedValueOnce({ status: 404 });     // post-check after 500: gone
+    (ctx.client.dataModelObjects.delete as ReturnType<typeof vi.fn>).mockRejectedValue({
+      status: 500,
+      body: '[{"message":"INTERNAL_ERROR: correlation id abc-123"}]',
+    });
+    await expect(DmoResource.delete(ctx, "X__dlm")).resolves.toBeUndefined();
+  });
+});

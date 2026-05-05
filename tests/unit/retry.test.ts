@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { retryOn, retryOn5xx, is5xx } from "../../src/client/retry.js";
+import { retryOn, retryOn5xx, is5xx, isNotFound } from "../../src/client/retry.js";
 
 const fastOpts = { intervalMs: 1, jitter: 0 };
 
@@ -50,5 +50,41 @@ describe("retryOn", () => {
       status: 500,
     });
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("isNotFound", () => {
+  it("matches plain 404", () => {
+    expect(isNotFound({ status: 404 })).toBe(true);
+  });
+
+  it("matches 500 with 'not found' in the body (quirk B1)", () => {
+    expect(isNotFound({ status: 500, body: '[{"message":"DMO not found"}]' })).toBe(true);
+    expect(isNotFound({ status: 500, message: "The DMO was not found." })).toBe(true);
+  });
+
+  it("ignores 500 without 'not found' body", () => {
+    expect(isNotFound({ status: 500, body: '[{"message":"UNKNOWN_EXCEPTION"}]' })).toBe(false);
+  });
+
+  it("matches 400 with extra400Body opt-in (SearchIndex quirk)", () => {
+    const err = {
+      status: 400,
+      body: '[{"errorCode":"INVALID_INPUT","message":"The resource with ID or api name = X was not found."}]',
+    };
+    expect(isNotFound(err)).toBe(false); // default: no 400 matching
+    expect(isNotFound(err, { extra400Body: "was not found" })).toBe(true);
+  });
+
+  it("accepts regex for extra400Body / body500", () => {
+    const err = { status: 400, message: "api name = X was NOT FOUND." };
+    expect(isNotFound(err, { extra400Body: /was not found/i })).toBe(true);
+  });
+
+  it("rejects non-object errors and non-matching statuses", () => {
+    expect(isNotFound(null)).toBe(false);
+    expect(isNotFound("nope")).toBe(false);
+    expect(isNotFound({ status: 200 })).toBe(false);
+    expect(isNotFound({ status: 400 })).toBe(false);
   });
 });

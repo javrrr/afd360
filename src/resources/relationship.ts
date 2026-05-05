@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, errBodyIncludes } from "../client/retry.js";
+import { retryOn5xx, isNotFound } from "../client/retry.js";
 import type { DMO } from "./dmo.js";
 import type { Mapping } from "./mapping.js";
 
@@ -96,13 +96,6 @@ function toOutput(
   return out;
 }
 
-function isNotFound(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const status = (err as { status?: unknown }).status;
-  if (status === 404) return true;
-  if (status === 500 && errBodyIncludes(err, "not found")) return true;
-  return false;
-}
 
 export const RelationshipResource: Resource<
   RelationshipResourceProps,
