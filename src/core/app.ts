@@ -10,6 +10,15 @@ export interface ResourceConstruct<Props = unknown, Output = unknown>
   readonly resource: Resource<Props, Output>;
   readonly props: Props;
   readonly dependsOn: readonly Construct[];
+  /**
+   * Deploy-time hook: given the ids of already-deployed resources (keyed by
+   * uniqueId), return the final props to pass to create/update. Used by
+   * resources that reference another resource's Salesforce id (e.g.
+   * ConnectionSchema injects the parent Connection's id here).
+   *
+   * Default implementation returns `this.props` unchanged.
+   */
+  resolveProps?(deployedIds: ReadonlyMap<string, string>): Props;
 }
 
 export function isResourceConstruct(
@@ -44,14 +53,22 @@ export interface Plan {
   resources: PlanResource[];
 }
 
+/**
+ * Cross-realm marker so App and Stack recognize each other even when the user
+ * imports from `src/` (integration tests) and the CLI imports from `dist/` —
+ * two separate module graphs where `instanceof` mis-fires. Using
+ * `Symbol.for(...)` gets us a single global registry entry.
+ */
+export const STACK_MARKER = Symbol.for("afd360.core.Stack.v1");
+
 export class App implements Scope {
   readonly id = "";
   readonly path: readonly string[] = [];
   readonly stacks: Stack[] = [];
 
   addChild(child: Construct): void {
-    if (child instanceof Stack) {
-      this.stacks.push(child);
+    if ((child as { [STACK_MARKER]?: boolean })[STACK_MARKER]) {
+      this.stacks.push(child as Stack);
     }
   }
 
@@ -95,6 +112,11 @@ export class Stack extends Construct {
     this.targetOrg = props.targetOrg;
   }
 }
+
+// Prototype-level marker — set once, visible before the subclass's super()
+// call completes, so App.addChild can identify Stack instances even across
+// module-graph boundaries (src/ vs dist/).
+Object.defineProperty(Stack.prototype, STACK_MARKER, { value: true });
 
 function* walkResources(
   root: Construct,

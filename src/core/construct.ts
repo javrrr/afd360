@@ -27,7 +27,16 @@ export interface ResourceContext {
 export interface Resource<Props, Output> {
   readonly type: string;
   readonly surface: "connect" | "metadata";
+  /** Fetch current state given an id previously returned from create/update. */
   read(ctx: ResourceContext, id: string): Promise<Output | null>;
+  /**
+   * First-time lookup by authored props — used when the state file has no id
+   * for this resource. For resources whose API has a GET-by-name, this is
+   * typically a thin wrapper around it.
+   */
+  lookupByProps?(ctx: ResourceContext, props: Props): Promise<Output | null>;
+  /** Stable id extracted from an output; stored in state and fed back to read/delete. */
+  idOf(output: Output): string;
   create(ctx: ResourceContext, props: Props): Promise<Output>;
   update(ctx: ResourceContext, id: string, props: Props): Promise<Output>;
   delete(ctx: ResourceContext, id: string): Promise<void>;
