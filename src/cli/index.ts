@@ -7,6 +7,7 @@ import { registerSynth } from "./synth.js";
 import { registerDiff } from "./diff.js";
 import { registerDeploy } from "./deploy.js";
 import { registerDestroy } from "./destroy.js";
+import { registerImport } from "./import.js";
 
 const program = new Command();
 
@@ -20,8 +21,9 @@ registerSynth(program);
 registerDiff(program);
 registerDeploy(program);
 registerDestroy(program);
+registerImport(program);
 
-// Future: M10 import, M11 init.
+// Future: M11 init.
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);

@@ -23,7 +23,14 @@ export async function loadApp(configPath: string): Promise<App> {
   const mod = (await tsImport(pathToFileURL(abs).href, import.meta.url)) as {
     default?: unknown;
   };
-  const app = mod.default;
+  // tsx sometimes double-wraps the default export when the config file imports
+  // from a package name (as opposed to a relative path) — the outer `default`
+  // is a Module namespace whose own `default` is the real App. Unwrap one
+  // level when we see that shape.
+  let app: unknown = mod.default;
+  if (app && typeof app === "object" && "default" in app && !isApp(app)) {
+    app = (app as { default: unknown }).default;
+  }
   // Duck-type check — when the user imports from ./src, they get a different
   // class identity than the CLI's `instanceof App`. Check for the structural
   // contract instead: `synth()` + `stacks[]`.
