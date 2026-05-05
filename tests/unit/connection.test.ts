@@ -17,6 +17,15 @@ describe("Connection construct", () => {
     expect(b.devName).toBe("overridden_name");
   });
 
+  it("normalizes props.name so resource callers never see an undefined name", () => {
+    // Regression: early S3 deploy POSTed name:"" and got
+    // ILLEGAL_QUERY_PARAMETER_VALUE "dataConnection.developerName cannot be empty".
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "x" });
+    const c = new Connection(stack, "MyConn", { connectorType: "AwsS3", label: "L" });
+    expect(c.props.name).toBe("MyConn");
+  });
+
   it("materializes a ConnectionSchema child when connectorType=IngestApi + schema supplied", () => {
     const app = new App();
     const stack = new Stack(app, "RagDemo", { targetOrg: "jaygentforce" });
@@ -49,14 +58,19 @@ describe("Connection construct", () => {
   it("hash excludes the schema sub-tree", () => {
     const app = new App();
     const stack = new Stack(app, "S", { targetOrg: "x" });
+    // Two constructs with the same name/label/connectorType but DIFFERENT
+    // schemas should hash identically — schema is a separate resource whose
+    // drift is tracked on its own state entry.
     const a = new Connection(stack, "A", {
       connectorType: "IngestApi",
-      label: "A",
+      label: "L",
+      name: "ConnName",
       schema: { label: "s", fields: [{ name: "f", dataType: "Text" }] },
     });
     const b = new Connection(stack, "B", {
       connectorType: "IngestApi",
-      label: "A", // same label
+      label: "L",
+      name: "ConnName",
       schema: { label: "DIFFERENT", fields: [] },
     });
     expect(a.resource.hash(a.props)).toBe(b.resource.hash(b.props));

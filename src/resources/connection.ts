@@ -140,8 +140,14 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
   },
 
   async create(ctx, props): Promise<ConnectionOutput> {
-    const devName = props.name ?? "";
-    const body = apiPayload(props, devName) as Parameters<
+    if (!props.name) {
+      throw new Error(
+        "ConnectionResource.create requires props.name — the Connection construct " +
+          "normalizes this to the logical id if absent, so a missing value indicates " +
+          "the resource was invoked outside the normal construct path.",
+      );
+    }
+    const body = apiPayload(props, props.name) as Parameters<
       Data360Client["connections"]["create"]
     >[0];
     const result = await retryOn5xx(() => ctx.client.connections.create(body));
@@ -213,9 +219,14 @@ export class Connection extends Construct {
 
   constructor(scope: Stack, id: string, props: ConnectionProps, opts: ConnectionOpts = {}) {
     super(scope, id);
-    this.props = props;
-    this.dependsOn = opts.dependsOn ?? [];
     this.devName = props.name ?? id;
+    // Normalize — store the resolved devName in props so downstream consumers
+    // (ConnectionResource.create, hashing, synth output) never see an undefined
+    // `name`. Evidence: early C3-S3 deploys sent `name: ""` to the Connect API
+    // and got `ILLEGAL_QUERY_PARAMETER_VALUE dataConnection.developerName cannot
+    // be empty` because the authored name fell back to an empty string.
+    this.props = { ...props, name: this.devName };
+    this.dependsOn = opts.dependsOn ?? [];
 
     if (props.schema) {
       if (props.connectorType !== "IngestApi") {
