@@ -15,9 +15,10 @@ export type DloCategory = "Engagement" | "Profile" | "Other";
 /**
  * Supported connector types. Each maps to a different Connect API payload
  * shape (`datastreamType`, `connectorInfo.connectorDetails`, and sometimes
- * `advancedAttributes`). M4 wired up IngestApi; M5 adds AwsS3.
+ * `advancedAttributes`). M4 wired up IngestApi; M5 adds AwsS3; M11.1 adds
+ * SNOWFLAKE (federated — platform introspects the source table schema).
  */
-export type DataStreamConnectorType = "IngestApi" | "AwsS3";
+export type DataStreamConnectorType = "IngestApi" | "AwsS3" | "SNOWFLAKE";
 
 export interface DataStreamPrimaryKey {
   readonly name: string;
@@ -73,17 +74,63 @@ export interface AwsS3StreamAttributes {
   readonly fields: ReadonlyArray<SourceFieldMapping>;
 }
 
+/**
+ * SNOWFLAKE-specific advanced attributes. `database`, `schema`, and `object`
+ * identify the source table inside Snowflake (NOT on the connection — the
+ * connection only carries warehouse + auth, so the same Snowflake connection
+ * can feed many streams against different tables). Platform introspects the
+ * column schema server-side; the user doesn't declare columns — only the PK.
+ *
+ * Observed shape on aporg (dataStreams.list.json, SnowOrderV2 / TV_Viewing_Snow):
+ *   advancedAttributes: { database, schema, object, incrementalColumn? }
+ *   refreshConfig.refreshMode: "INCREMENTAL" | "TOTAL_REPLACE" | "UPSERT"
+ */
+export interface SnowflakeStreamAttributes {
+  /** Snowflake database name (Snowflake uppercases unquoted identifiers). */
+  readonly database: string;
+  /** Snowflake schema name. */
+  readonly schema: string;
+  /** Snowflake table or view name. */
+  readonly object: string;
+  /**
+   * Column name to use for incremental loads (refreshMode=INCREMENTAL).
+   * Typically a monotonically-increasing DateTime or Number column. Omit
+   * for TOTAL_REPLACE / UPSERT refresh modes.
+   */
+  readonly incrementalColumn?: string;
+  /**
+   * Source columns and their mapping into the DLO. REQUIRED: despite being
+   * federated, the platform rejects the create with "source fields are
+   * required" if omitted. Probed on awt 2026-05-06. Matches the AwsS3
+   * requirement.
+   *
+   * The Snowflake wire shape uses LOWERCASE `datatype` (not `dataType`) and
+   * `sourceFieldName` on mappings (not `sourceFieldLabel` like AwsS3). afd360
+   * handles both translations internally — users author the same
+   * `SourceFieldMapping` shape they use for AwsS3.
+   */
+  readonly fields: ReadonlyArray<SourceFieldMapping>;
+}
+
 export interface DataStreamProps {
   readonly connection: Connection;
   /** Logical name of the source object:
    *  - IngestApi: schema object name (matches ConnectionSchema.schemaName).
-   *  - AwsS3: a stable identifier for the stream; used for the DLO name. */
+   *  - AwsS3: a stable identifier for the stream; used for the DLO name.
+   *  - SNOWFLAKE: user-facing identifier; separate from `snowflake.object`
+   *    (the Snowflake table name). Used to name the DLO. */
   readonly sourceObject: string;
   /** Developer name; falls back to the construct logical id. */
   readonly name?: string;
   readonly label?: string;
   readonly category?: DloCategory;
-  readonly refreshMode?: "UPSERT" | "REPLACE" | "APPEND";
+  /**
+   * How the DLO is refreshed. Connector-dependent defaults:
+   *   IngestApi / AwsS3: UPSERT
+   *   SNOWFLAKE: INCREMENTAL (requires `snowflake.incrementalColumn`) or
+   *     TOTAL_REPLACE. UPSERT is not supported on federated Snowflake.
+   */
+  readonly refreshMode?: "UPSERT" | "REPLACE" | "APPEND" | "INCREMENTAL" | "TOTAL_REPLACE";
   /** Data space for the resulting DLO. "default" unless multi-tenant. */
   readonly dataSpace?: string;
   readonly primaryKey: DataStreamPrimaryKey;
@@ -97,6 +144,11 @@ export interface DataStreamProps {
    * the parent connection's connectorType is AwsS3; validated at construct time.
    */
   readonly s3?: AwsS3StreamAttributes;
+  /**
+   * SNOWFLAKE-only: which table to pull from. Required when the parent
+   * connection's connectorType is SNOWFLAKE.
+   */
+  readonly snowflake?: SnowflakeStreamAttributes;
 }
 
 export interface DataStreamOutput {
@@ -117,16 +169,18 @@ export interface DataStreamResourceProps {
   readonly name: string;
   readonly label: string;
   readonly category: DloCategory;
-  readonly refreshMode: "UPSERT" | "REPLACE" | "APPEND";
+  readonly refreshMode: "UPSERT" | "REPLACE" | "APPEND" | "INCREMENTAL" | "TOTAL_REPLACE";
   readonly dataSpace: string;
   readonly primaryKey: DataStreamPrimaryKey;
   readonly eventDateTimeFieldName?: string;
   readonly s3?: AwsS3StreamAttributes;
+  readonly snowflake?: SnowflakeStreamAttributes;
 }
 
 function buildCreatePayload(p: DataStreamResourceProps): unknown {
   if (p.connectorType === "IngestApi") return buildIngestApiPayload(p);
   if (p.connectorType === "AwsS3") return buildAwsS3Payload(p);
+  if (p.connectorType === "SNOWFLAKE") return buildSnowflakePayload(p);
   // Exhaustive check — future connector types land here.
   const _exhaustive: never = p.connectorType;
   throw new Error(`DataStream connectorType "${String(_exhaustive)}" is not supported yet.`);
@@ -252,6 +306,113 @@ function buildAwsS3Payload(p: DataStreamResourceProps): unknown {
   };
 }
 
+/**
+ * SNOWFLAKE is federated — the platform queries Snowflake live to introspect
+ * table columns. The create payload only identifies the source table and PK;
+ * no sourceFields/mappings/DLO-field-reps needed (platform derives them).
+ *
+ * Shape derived from aporg 2026-05-06 dataStreams.list.json (SnowOrderV2,
+ * TV_Viewing_Snow), which captured the live GET response. Keys confirmed
+ * against data-360-sdk's ConnectorFrameworkPayload type.
+ */
+function buildSnowflakePayload(p: DataStreamResourceProps): unknown {
+  if (!p.snowflake) {
+    throw new Error(
+      `DataStream "${p.name}": connectorType=SNOWFLAKE requires snowflake attributes ` +
+        `({ database, schema, object, incrementalColumn?, fields }).`,
+    );
+  }
+  const snowflakeFields = p.snowflake.fields;
+  if (!snowflakeFields || snowflakeFields.length === 0) {
+    throw new Error(
+      `DataStream "${p.name}": snowflake.fields is required. Despite being ` +
+        `federated, the platform rejects creates without sourceFields. ` +
+        `Declare the Snowflake columns you want to pull.`,
+    );
+  }
+  const pkFields = snowflakeFields.filter((f) => f.isPrimaryKey);
+  if (pkFields.length !== 1) {
+    throw new Error(
+      `DataStream "${p.name}": snowflake.fields must contain exactly one isPrimaryKey field (got ${pkFields.length}).`,
+    );
+  }
+  const dloNameFor = (f: SourceFieldMapping): string =>
+    f.dloName ?? f.name.replace(/\s+/g, "_");
+  // Snowflake's BYOL (Direct_Access) path uses lowercase `database`/`schema`/
+  // `object` keys — not the UPPERCASE `DATABASE`/`SCHEMA`/`objectName` that
+  // appear in the connector's `advancedAttributes` metadata. The metadata
+  // form-keys aren't the same as the create-payload keys. Observed on awt
+  // 2026-05-06.
+  const advancedAttributes: Record<string, unknown> = {
+    database: p.snowflake.database,
+    schema: p.snowflake.schema,
+    object: p.snowflake.object,
+  };
+  if (p.snowflake.incrementalColumn) {
+    advancedAttributes["incrementalColumn"] = p.snowflake.incrementalColumn;
+  }
+  const dlo: Record<string, unknown> = {
+    label: p.sourceObject,
+    name: `${p.sourceObject}__dll`,
+    category: p.category,
+    dataspaceInfo: [{ name: p.dataSpace }],
+    dataLakeFieldInputRepresentations: snowflakeFields.map((f) => ({
+      name: dloNameFor(f),
+      label: f.name,
+      dataType: f.dataType,
+      isPrimaryKey: !!f.isPrimaryKey,
+    })),
+  };
+  if (p.category === "Engagement") {
+    if (!p.eventDateTimeFieldName) {
+      throw new Error(
+        `DataStream "${p.name}": category=Engagement requires eventDateTimeFieldName.`,
+      );
+    }
+    dlo["eventDateTimeFieldName"] = p.eventDateTimeFieldName;
+  }
+  return {
+    name: p.name,
+    label: p.label,
+    // CRITICAL — Snowflake stream creation routes through the BYOL/zero-copy
+    // path, NOT the ingest path. The Connect API has two separate creation
+    // pipelines and the discriminator is `dataAccessMode`:
+    //   - Ingest:        copies data to Data Cloud's lake (AwsS3 / IngestApi)
+    //   - Direct_Access: federated query against the source (Snowflake / BigQuery / Databricks)
+    //
+    // Without `dataAccessMode: "Direct_Access"`, the server tries the ingest
+    // path and returns the misleading error
+    //   `Unable to post Data Stream: DATA_CONNECTORS is not supported`
+    // even though the connector itself is GA. With Direct_Access, the
+    // BYOL path takes over and the create succeeds. Observed on awt
+    // 2026-05-06; see feedback_snowflake-stream-direct-access.md.
+    //
+    // Also note: `datasource` MUST be omitted for Direct_Access streams —
+    // the server returns `DataSource name should be empty for External data
+    // streams` if present.
+    dataAccessMode: "Direct_Access",
+    datastreamType: "DATA_CONNECTORS",
+    connectorInfo: {
+      connectorType: "DataConnector",
+      connectorDetails: { name: p.connectionName },
+    },
+    advancedAttributes,
+    // POST wants `dataType` (camelCase); GET echoes `datatype` (lowercase).
+    sourceFields: snowflakeFields.map((f) => {
+      const sf: Record<string, unknown> = { name: f.name, dataType: f.dataType };
+      if (f.format) sf["format"] = f.format;
+      return sf;
+    }),
+    mappings: snowflakeFields.map((f) => ({
+      sourceFieldLabel: f.name,
+      targetFieldName: dloNameFor(f),
+      targetFieldReturntype: f.dataType,
+    })),
+    dataLakeObjectInfo: dlo,
+    refreshConfig: { refreshMode: p.refreshMode },
+  };
+}
+
 function pkFieldRep(pk: DataStreamPrimaryKey): unknown {
   return {
     name: pk.name,
@@ -265,9 +426,10 @@ function inferConnectorType(conn: Connection): DataStreamConnectorType {
   const ct = conn.props.connectorType;
   if (ct === "IngestApi") return "IngestApi";
   if (ct === "AwsS3") return "AwsS3";
+  if (ct === "SNOWFLAKE") return "SNOWFLAKE";
   throw new Error(
     `DataStream does not yet support connectorType "${ct}". ` +
-      `Supported: IngestApi, AwsS3. (Snowflake and others will land in later milestones.)`,
+      `Supported: IngestApi, AwsS3, SNOWFLAKE.`,
   );
 }
 
@@ -348,14 +510,14 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
     // name is derived from `dataLakeObjectInfo.name` (minus __dll), NOT the
     // authored `name` we sent. Response body may still echo the authored
     // name, but GET /ssot/data-streams/{authoredName} then returns "not
-    // found". Key state on the DLO-derived name for AwsS3, and the response
-    // name for IngestApi. See memory note feedback_s3-stream-devname-from-dlo.md.
+    // found". Key state on the DLO-derived name for AwsS3/SNOWFLAKE (both
+    // ride the DataConnector family), and the response name for IngestApi.
+    // See memory note feedback_s3-stream-devname-from-dlo.md.
     const dloName = result.dataLakeObjectInfo?.name;
     const derivedName = dloName?.endsWith("__dll") ? dloName.slice(0, -"__dll".length) : undefined;
-    const name =
-      props.connectorType === "AwsS3" && derivedName
-        ? derivedName
-        : result.name;
+    const usesDerivedName =
+      props.connectorType === "AwsS3" || props.connectorType === "SNOWFLAKE";
+    const name = usesDerivedName && derivedName ? derivedName : result.name;
     if (!name) {
       throw new Error(
         `dataStreams.create returned a DataStreamRepresentation with no name — cannot key state.`,
@@ -513,13 +675,17 @@ export class DataStream extends Construct {
     super(scope, id);
     this.devName = props.name ?? id;
     const category: DloCategory = props.category ?? "Other";
-    const refreshMode = props.refreshMode ?? "UPSERT";
+    // Connector-specific refresh-mode default. Snowflake wants INCREMENTAL
+    // (or TOTAL_REPLACE); IngestApi / AwsS3 want UPSERT.
+    const connectorType = inferConnectorType(props.connection);
+    const refreshMode =
+      props.refreshMode ??
+      (connectorType === "SNOWFLAKE" ? "INCREMENTAL" : "UPSERT");
     const dataSpace = props.dataSpace ?? "default";
     // Derive connector type from the parent Connection and validate s3 attrs.
     // Keeping this mapping in one place means the manifest author picks one
     // Connection + one set of stream props; the connector-specific payload
     // shape is afd360's problem.
-    const connectorType = inferConnectorType(props.connection);
     if (connectorType === "AwsS3" && !props.s3) {
       throw new Error(
         `DataStream "${id}": AwsS3 connections require s3 attributes ` +
@@ -529,6 +695,27 @@ export class DataStream extends Construct {
     if (connectorType === "IngestApi" && props.s3) {
       throw new Error(
         `DataStream "${id}": s3 attributes are only meaningful for AwsS3 connections.`,
+      );
+    }
+    if (connectorType === "SNOWFLAKE" && !props.snowflake) {
+      throw new Error(
+        `DataStream "${id}": SNOWFLAKE connections require snowflake attributes ` +
+          `({ database, schema, object, incrementalColumn? }).`,
+      );
+    }
+    if (connectorType !== "SNOWFLAKE" && props.snowflake) {
+      throw new Error(
+        `DataStream "${id}": snowflake attributes are only meaningful for SNOWFLAKE connections.`,
+      );
+    }
+    if (
+      connectorType === "SNOWFLAKE" &&
+      refreshMode === "INCREMENTAL" &&
+      !props.snowflake?.incrementalColumn
+    ) {
+      throw new Error(
+        `DataStream "${id}": refreshMode=INCREMENTAL requires snowflake.incrementalColumn. ` +
+          `Use refreshMode="TOTAL_REPLACE" for a full-table refresh.`,
       );
     }
     if (category === "Engagement" && !props.eventDateTimeFieldName) {
@@ -555,6 +742,9 @@ export class DataStream extends Construct {
     }
     if (props.s3) {
       resolvedProps = { ...resolvedProps, s3: props.s3 };
+    }
+    if (props.snowflake) {
+      resolvedProps = { ...resolvedProps, snowflake: props.snowflake };
     }
     this.props = resolvedProps;
     // Auto-wire dependency on the parent Connection (and ConnectionSchema if
