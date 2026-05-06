@@ -62,8 +62,23 @@ export const ConnectionSchemaResource: Resource<
 
   async create(ctx, props): Promise<ConnectionSchemaOutput> {
     const { schema, schemaName } = props;
+    // Quirk: the Connect API server-side NPEs with `this.text is null` when
+    // any field is missing a `label`. Observed on awt 2026-05-06 — a fresh
+    // org returns `500 INTERNAL_SERVER_ERROR: Cannot invoke
+    // "java.lang.CharSequence.length()" because "this.text" is null`. Default
+    // field.label = field.name so users can author terse manifests.
+    const normalizedFields = schema.fields.map((f) => ({
+      ...f,
+      label: f.label ?? f.name,
+    }));
     const body = {
-      schemas: [{ ...schema, schemaType: "IngestApi", name: schemaName, label: schema.label }],
+      schemas: [{
+        ...schema,
+        schemaType: "IngestApi",
+        name: schemaName,
+        label: schema.label,
+        fields: normalizedFields,
+      }],
     } as Parameters<Data360Client["connections"]["putSchema"]>[1];
     await retryOn5xx(() => ctx.client.connections.putSchema(props.connectionId, body));
     return { connectionId: props.connectionId, schemaName };

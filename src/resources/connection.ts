@@ -155,9 +155,20 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
       batchSize: 200,
     });
     const devName = props.name;
-    const match = result.connections?.find((c) =>
-      devName ? c.name === devName : c.label === props.label,
-    );
+    const connections = result.connections ?? [];
+    // Exact name match first. Handles AwsS3 / Snowflake / Databricks where
+    // the platform preserves the authored name verbatim.
+    let match = devName
+      ? connections.find((c) => c.name === devName)
+      : connections.find((c) => c.label === props.label);
+    // IngestApi quirk: the platform rewrites the Connection's `name` to
+    // `<label-underscored>_<uuid>` on create (see memory note
+    // feedback_ingestapi-name-auto-suffix.md). So an exact-name lookup never
+    // finds a freshly created IngestApi Connection on second deploy. Fall
+    // back to matching on `label` — stable across the rewrite.
+    if (!match && props.connectorType === "IngestApi" && props.label) {
+      match = connections.find((c) => c.label === props.label);
+    }
     if (!match) return null;
     return toOutput(match);
   },

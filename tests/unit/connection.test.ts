@@ -169,4 +169,94 @@ describe("ConnectionSchema resource", () => {
       ConnectionSchemaResource.idOf({ connectionId: "0xH", schemaName: "KB" }),
     ).toBe("0xH::KB");
   });
+
+  it("defaults field.label = field.name to avoid the server-NPE quirk", async () => {
+    // Observed on awt 2026-05-06: PUT /ssot/connections/.../schema with any
+    // field missing `label` returns 500 with Java NPE "this.text is null".
+    // afd360 defaults label = name at the resource layer so user-authored
+    // manifests can be terse.
+    const putSchema = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      client: { connections: { putSchema } } as unknown as ResourceContext["client"],
+      session: {
+        alias: "awt", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "awt",
+    } as ResourceContext;
+    await ConnectionSchemaResource.create(ctx, {
+      connectionId: "1WMbm0000003f3RGAQ",
+      schemaName: "KnowledgeBase",
+      schema: {
+        label: "KnowledgeBase",
+        fields: [
+          { name: "Id", dataType: "Text" }, // no label
+          { name: "Body", label: "Body Text", dataType: "Text" }, // explicit label preserved
+        ],
+      },
+    });
+    const body = putSchema.mock.calls[0]![1] as {
+      schemas: Array<{ fields: Array<{ name: string; label: string }> }>;
+    };
+    const fields = body.schemas[0]!.fields;
+    expect(fields[0]).toMatchObject({ name: "Id", label: "Id", dataType: "Text" });
+    expect(fields[1]).toMatchObject({ name: "Body", label: "Body Text", dataType: "Text" });
+  });
+});
+
+describe("ConnectionResource.lookupByProps", () => {
+  function mockListCtx(connections: Array<{ id?: string; name?: string; label?: string; connectorType?: string; status?: string }>): ResourceContext {
+    return {
+      client: {
+        connections: {
+          list: vi.fn().mockResolvedValue({ connections }),
+        },
+      } as unknown as ResourceContext["client"],
+      session: {
+        alias: "awt", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "awt",
+    };
+  }
+
+  it("adopts an IngestApi Connection whose name the platform rewrote to <label>_<uuid>", async () => {
+    // IngestApi quirk: POST /ssot/connections ignores authored `name` and
+    // writes back `<label-underscored>_<uuid>`. A second deploy therefore
+    // can't find the Connection by exact-name match; fall back to `label`.
+    const ctx = mockListCtx([
+      {
+        id: "1WMbm0000003f3RGAQ",
+        name: "Docs_Ingest_fb25bdc5_4a6e_4c9c_a2ce_dfacd3fc5ab9",
+        label: "Docs Ingest",
+        connectorType: "IngestApi",
+      },
+    ]);
+    const out = await ConnectionResource.lookupByProps!(ctx, {
+      connectorType: "IngestApi",
+      label: "Docs Ingest",
+      name: "DocsIngest",
+    });
+    expect(out?.id).toBe("1WMbm0000003f3RGAQ");
+    expect(out?.name).toBe("Docs_Ingest_fb25bdc5_4a6e_4c9c_a2ce_dfacd3fc5ab9");
+  });
+
+  it("non-IngestApi connectors still require exact-name match (no label fallback)", async () => {
+    // AwsS3 and Snowflake preserve authored names verbatim — exact-match is
+    // the right contract, and two different S3 connections can share a label.
+    const ctx = mockListCtx([
+      {
+        id: "0sH1",
+        name: "different_name",
+        label: "Docs S3",
+        connectorType: "AwsS3",
+      },
+    ]);
+    const out = await ConnectionResource.lookupByProps!(ctx, {
+      connectorType: "AwsS3",
+      label: "Docs S3",
+      name: "DocsS3",
+    });
+    expect(out).toBeNull();
+  });
 });
