@@ -5,6 +5,9 @@ import {
   SearchIndex,
   SearchIndexResource,
 } from "../../src/resources/search-index.js";
+import { Mapping } from "../../src/resources/mapping.js";
+import { Connection } from "../../src/resources/connection.js";
+import { DataStream } from "../../src/resources/data-stream.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
 function mockCtx(): ResourceContext {
@@ -292,5 +295,95 @@ describe("SearchIndexResource.isReady", () => {
         id: "x", developerName: "X", runtimeStatus: "FAILED",
       }),
     ).rejects.toThrow(/terminal state FAILED/);
+  });
+});
+
+describe("SearchIndex auto-deps on Mapping siblings", () => {
+  function buildStack(order: "mapping-first" | "index-first"): {
+    stack: Stack;
+    dmo: DMO;
+    stream: DataStream;
+    mapping: Mapping;
+    idx: SearchIndex;
+  } {
+    const app = new App();
+    const stack = new Stack(app, "Rag", { targetOrg: "x" });
+    const conn = new Connection(stack, "Conn", {
+      connectorType: "IngestApi",
+      label: "Conn",
+      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    const stream = new DataStream(stack, "Stream", {
+      connection: conn,
+      sourceObject: "KB",
+      primaryKey: { name: "Id" },
+    });
+    const dmo = new DMO(stack, "Articles", {
+      fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+    });
+    if (order === "mapping-first") {
+      const mapping = new Mapping(stack, "Map", {
+        source: stream,
+        target: dmo,
+        fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+      });
+      const idx = new SearchIndex(stack, "Idx", {
+        sourceDmo: dmo,
+        fields: [{ fieldDeveloperName: "Id__c" }],
+      });
+      return { stack, dmo, stream, mapping, idx };
+    } else {
+      const idx = new SearchIndex(stack, "Idx", {
+        sourceDmo: dmo,
+        fields: [{ fieldDeveloperName: "Id__c" }],
+      });
+      const mapping = new Mapping(stack, "Map", {
+        source: stream,
+        target: dmo,
+        fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+      });
+      return { stack, dmo, stream, mapping, idx };
+    }
+  }
+
+  it("wires Mapping → SearchIndex when Mapping is authored first", () => {
+    const { mapping, idx } = buildStack("mapping-first");
+    expect(idx.dependsOn).toContain(mapping);
+  });
+
+  it("wires Mapping → SearchIndex when SearchIndex is authored first (reciprocal)", () => {
+    const { mapping, idx } = buildStack("index-first");
+    expect(idx.dependsOn).toContain(mapping);
+  });
+
+  it("does not wire a Mapping that targets a different DMO", () => {
+    const app = new App();
+    const stack = new Stack(app, "Rag", { targetOrg: "x" });
+    const conn = new Connection(stack, "Conn", {
+      connectorType: "IngestApi",
+      label: "Conn",
+      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    const stream = new DataStream(stack, "Stream", {
+      connection: conn,
+      sourceObject: "KB",
+      primaryKey: { name: "Id" },
+    });
+    const articlesDmo = new DMO(stack, "Articles", {
+      fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+    });
+    const otherDmo = new DMO(stack, "Other", {
+      fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+    });
+    const otherMapping = new Mapping(stack, "OtherMap", {
+      source: stream,
+      target: otherDmo,
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    const idx = new SearchIndex(stack, "Idx", {
+      sourceDmo: articlesDmo,
+      fields: [{ fieldDeveloperName: "Id__c" }],
+    });
+    expect(idx.dependsOn).not.toContain(otherMapping);
   });
 });

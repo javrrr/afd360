@@ -439,6 +439,31 @@ export class SearchIndex extends Construct {
 
     const autoDeps: Construct[] = [];
     if (typeof props.sourceDmo !== "string") autoDeps.push(props.sourceDmo);
+    // Auto-wire any Mapping in the same stack whose target DMO matches our
+    // source DMO. Without this, topo sort can run SearchIndex in parallel
+    // with Mapping — and the index's chunk/vector DMOs may sit at
+    // runtimeStatus=null indefinitely waiting for source data that hasn't
+    // been mapped yet (causing the 10-min poll to time out).
+    //
+    // Two-way wiring: at construct time we scan existing siblings; the
+    // Mapping constructor reciprocates by appending itself to any already-
+    // constructed SearchIndex whose sourceDmo matches its target. Order-
+    // independent.
+    const stackScope = findStack(scope);
+    if (stackScope) {
+      for (const sibling of stackScope.children) {
+        if (
+          isMappingForDmo(sibling, sourceDmoDeveloperName) &&
+          !autoDeps.includes(sibling) &&
+          !(props.dependsOn ?? []).includes(sibling) &&
+          !(opts.dependsOn ?? []).includes(sibling)
+        ) {
+          autoDeps.push(sibling);
+        }
+      }
+    }
+    // Mutable internal list so Mapping.constructor can append to it later
+    // (when Mapping is constructed AFTER this SearchIndex).
     this.dependsOn = [...autoDeps, ...(props.dependsOn ?? []), ...(opts.dependsOn ?? [])];
 
     // SearchIndex readiness is slow — provisioning a chunk+vector DMO plus
@@ -456,4 +481,50 @@ function inferPkField(sourceDmo: DMO | string, fullName: string): string {
   }
   // Standard-DMO convention: ssot__Id__c on ssot__* DMOs, Id__c otherwise.
   return fullName.startsWith("ssot__") ? "ssot__Id__c" : "Id__c";
+}
+
+/**
+ * Walk up the scope chain to find the owning Stack. Used by SearchIndex's
+ * sibling-Mapping discovery — Mapping siblings live as direct children of
+ * the Stack, not of the SearchIndex itself.
+ */
+function findStack(scope: Construct | { children: Construct[] }): { children: Construct[] } | null {
+  let cur: unknown = scope;
+  // Walk up until we find something with `targetOrg` (Stack) or run out of parent.
+  while (cur && typeof cur === "object") {
+    if ("targetOrg" in cur) return cur as unknown as { children: Construct[] };
+    cur = (cur as { scope?: unknown }).scope;
+  }
+  return null;
+}
+
+/**
+ * Is `c` a Mapping construct whose target DMO matches `dmoFullName`?
+ * Duck-typed so cross-realm SearchIndex (e.g. user's src/ vs CLI's dist/)
+ * still recognizes Mapping instances.
+ */
+function isMappingForDmo(c: Construct, dmoFullName: string): boolean {
+  const r = (c as { resource?: { type?: unknown } }).resource;
+  if (!r || (r as { type?: string }).type !== "Mapping") return false;
+  const props = (c as { props?: { targetDmoName?: unknown } }).props;
+  return (props?.targetDmoName as string | undefined) === dmoFullName;
+}
+
+/**
+ * Internal API for the Mapping construct: append `mapping` to this
+ * SearchIndex's dependsOn IF its sourceDmo matches the mapping's target.
+ * Called by `Mapping`'s constructor so that ordering between Mapping and
+ * SearchIndex in the manifest doesn't matter.
+ */
+export function attachMappingToSearchIndexes(stack: { children: Construct[] }, mapping: Construct & { props: { targetDmoName: string } }): void {
+  for (const sibling of stack.children) {
+    const r = (sibling as { resource?: { type?: unknown } }).resource;
+    if (!r || (r as { type?: string }).type !== "SearchIndex") continue;
+    const idx = sibling as unknown as { props: { sourceDmoDeveloperName: string }; dependsOn: Construct[] };
+    if (idx.props.sourceDmoDeveloperName !== mapping.props.targetDmoName) continue;
+    if (idx.dependsOn.includes(mapping)) continue;
+    // dependsOn is typed `readonly` for external consumers; mutate the
+    // backing array directly. Same pattern as Relationship.addDependency.
+    (idx.dependsOn as Construct[]).push(mapping);
+  }
 }
