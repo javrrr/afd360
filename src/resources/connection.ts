@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource, type ResourceContext } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, isNotFound } from "../client/retry.js";
+import { retryOn, retryOn5xx, is5xx, isNotFound, errBodyIncludes } from "../client/retry.js";
 import {
   ConnectionSchema,
   type ConnectionSchemaProps,
@@ -199,7 +199,21 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
     const body = apiPayload(props, props.name) as Parameters<
       Data360Client["connections"]["create"]
     >[0];
-    const result = await retryOn5xx(() => ctx.client.connections.create(body));
+    // DELETE→CREATE race: after a successful delete, the name is locked for
+    // ~seconds server-side even though the list endpoint already reports
+    // the connection as gone. An immediate recreate hits a
+    // `400 DUPLICATES_DETECTED: "A data connector with the provided name: X
+    // already exists"`. Observed on awt 2026-05-06 during a SNOWFLAKE
+    // hash-drift recreate. Retry alongside the baseline 5xx retry so a
+    // single `afd360 deploy` survives the lock window instead of making
+    // the user re-run.
+    const shouldRetry = (err: unknown): boolean =>
+      errBodyIncludes(err, "DUPLICATES_DETECTED") || is5xx(err);
+    const result = await retryOn(
+      () => ctx.client.connections.create(body),
+      shouldRetry,
+      { attempts: 6, intervalMs: 10_000, backoff: 1, jitter: 0 },
+    );
     return {
       id: result.id,
       name: result.name,

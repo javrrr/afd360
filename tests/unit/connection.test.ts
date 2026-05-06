@@ -204,6 +204,50 @@ describe("ConnectionSchema resource", () => {
   });
 });
 
+describe("ConnectionResource.create — DUPLICATES_DETECTED retry", () => {
+  it("retries on DUPLICATES_DETECTED (DELETE→CREATE race) and returns the eventual create output", async () => {
+    vi.useFakeTimers();
+    try {
+      const create = vi
+        .fn<(...args: unknown[]) => Promise<unknown>>()
+        .mockRejectedValueOnce({
+          status: 400,
+          body: '[{"errorCode":"DUPLICATES_DETECTED","message":"A data connector with the provided name: X already exists"}]',
+        })
+        .mockResolvedValueOnce({
+          id: "0sH-new",
+          name: "X",
+          label: "X",
+          connectorType: "SNOWFLAKE",
+        });
+      const ctx = {
+        client: {
+          connections: { create },
+        } as unknown as ResourceContext["client"],
+        session: {
+          alias: "awt", username: "u", orgId: "00D",
+          instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+        },
+        orgAlias: "awt",
+      } as ResourceContext;
+      const promise = ConnectionResource.create(ctx, {
+        connectorType: "SNOWFLAKE",
+        label: "X",
+        name: "X",
+      });
+      // Advance past the 10s retry backoff without real wall time. Flush
+      // microtasks between advances so the retry helper's sleep Promise
+      // resolves and the second attempt fires.
+      await vi.advanceTimersByTimeAsync(11_000);
+      const out = await promise;
+      expect(out.id).toBe("0sH-new");
+      expect(create).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("ConnectionResource.lookupByProps", () => {
   function mockListCtx(connections: Array<{ id?: string; name?: string; label?: string; connectorType?: string; status?: string }>): ResourceContext {
     return {
