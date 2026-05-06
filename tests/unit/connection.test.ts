@@ -146,6 +146,39 @@ describe("ConnectionResource.isFailed", () => {
   });
 });
 
+describe("ConnectionResource.delete — transient 500 retry", () => {
+  it("retries on transient 500 (platform-side cleanup race) and eventually succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      const del = vi
+        .fn<(...args: unknown[]) => Promise<unknown>>()
+        .mockRejectedValueOnce({
+          status: 500,
+          body: '[{"errorCode":"UNKNOWN_EXCEPTION","message":"transient cleanup race"}]',
+        })
+        .mockResolvedValueOnce(undefined);
+      const ctx = {
+        client: {
+          connections: { delete: del },
+        } as unknown as ResourceContext["client"],
+        session: {
+          alias: "awt", username: "u", orgId: "00D",
+          instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+        },
+        orgAlias: "awt",
+      } as ResourceContext;
+      const promise = ConnectionResource.delete(ctx, "9cgbm000000Wj21AAC");
+      // Advance past the 5s interval. Deliberately a few seconds longer to
+      // give the retry helper's sleep promise time to resolve cleanly.
+      await vi.advanceTimersByTimeAsync(6_000);
+      await promise;
+      expect(del).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("ConnectionResource.delete — already-gone tolerance (D1)", () => {
   it("swallows 404 as idempotent success", async () => {
     const ctx = mockDeleteCtx();
@@ -153,13 +186,23 @@ describe("ConnectionResource.delete — already-gone tolerance (D1)", () => {
     await expect(ConnectionResource.delete(ctx, "0xH-gone")).resolves.toBeUndefined();
   });
 
-  it("swallows 500 with 'not found' body", async () => {
-    const ctx = mockDeleteCtx();
-    (ctx.client.connections.delete as ReturnType<typeof vi.fn>).mockRejectedValue({
-      status: 500,
-      body: '[{"message":"The connection was not found."}]',
-    });
-    await expect(ConnectionResource.delete(ctx, "0xH-gone")).resolves.toBeUndefined();
+  it("swallows 500 with 'not found' body after retry budget exhausts", async () => {
+    // is5xx fires the retry loop; the body-text isNotFound check happens AFTER
+    // the loop gives up, in the catch handler. So we advance through all 6
+    // retries (5 × 5s sleeps = 25s) before the final swallow happens.
+    vi.useFakeTimers();
+    try {
+      const ctx = mockDeleteCtx();
+      (ctx.client.connections.delete as ReturnType<typeof vi.fn>).mockRejectedValue({
+        status: 500,
+        body: '[{"message":"The connection was not found."}]',
+      });
+      const promise = ConnectionResource.delete(ctx, "0xH-gone");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

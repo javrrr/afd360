@@ -235,7 +235,18 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
 
   async delete(ctx, salesforceId): Promise<void> {
     try {
-      await retryOn5xx(() => ctx.client.connections.delete(salesforceId));
+      // Connection delete can transiently 500 even when the connection is
+      // deletable and has no live dependents — observed on awt 2026-05-06
+      // for SNOWFLAKE: first attempt 500'd with UNKNOWN_EXCEPTION, retry
+      // ~10s later succeeded with 204. The platform-side cleanup (account
+      // binding teardown, OAuth token revocation, etc.) can briefly conflict
+      // with the delete handler. Use a longer retry window than the baseline
+      // 3 × 500ms — 6 × 5s gives the cleanup time to settle.
+      await retryOn(
+        () => ctx.client.connections.delete(salesforceId),
+        is5xx,
+        { attempts: 6, intervalMs: 5_000, backoff: 1, jitter: 0 },
+      );
     } catch (err) {
       // Quirks B1 / D1 — treat "already gone" as success during destroy.
       if (isNotFound(err)) return;
