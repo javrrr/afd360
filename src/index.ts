@@ -21,6 +21,7 @@ export type {
   DataStreamPrimaryKey,
   DataStreamConnectorType,
   AwsS3StreamAttributes,
+  SnowflakeStreamAttributes,
   DloCategory,
 } from "./resources/data-stream.js";
 export { DMO } from "./resources/dmo.js";
