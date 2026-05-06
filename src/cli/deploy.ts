@@ -117,79 +117,94 @@ export function registerDeploy(program: Command): void {
       // Planning up-front would freeze an out-of-date deployed view for
       // second-and-later resources, turning their potential `adopt` into
       // a stale `create` (and running a redundant API write).
+      //
+      // The whole loop runs inside try/finally so partial progress gets
+      // persisted to state even on mid-loop failure. Without this, a crash
+      // after resource N succeeded but before resource N+1 could leave the
+      // state file stale — and the next deploy would either double-create
+      // (state missing entries) or skip (state has wrong id). Mirror the
+      // destroy flow's try/finally (destroy.ts:~46).
       const ops: Op[] = [];
       let wrote = 0;
-      for (const uid of order) {
-        const c = byId.get(uid)!;
-        const op = await computeOp(ctx, c, state, deployed, { strictEnv: true });
-        ops.push(op);
-        const rawResolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
-        if (!rawResolved && op.kind !== "noop") {
-          throw new Error(
-            `Deploy runner invariant broken: ${c.uniqueId} dependencies unresolved before its turn.`,
-          );
-        }
-        // Substitute ${env.X} before any write. computeOp already did this
-        // with strictEnv:true, so if we got here it's safe.
-        const resolved = rawResolved ? substituteEnv(rawResolved) : rawResolved;
-        switch (op.kind) {
-          case "noop": {
-            process.stdout.write(`  ${pc.gray("noop")}     ${c.uniqueId}\n`);
-            if (op.currentId) {
-              const existing = state.resources[c.uniqueId];
-              deployed.set(c.uniqueId, {
-                salesforceId: op.currentId,
-                apiName: existing?.apiName ?? c.id,
-              });
+      try {
+        for (const uid of order) {
+          const c = byId.get(uid)!;
+          const op = await computeOp(ctx, c, state, deployed, { strictEnv: true });
+          ops.push(op);
+          const rawResolved = c.resolveProps ? c.resolveProps(deployed) : c.props;
+          if (!rawResolved && op.kind !== "noop") {
+            throw new Error(
+              `Deploy runner invariant broken: ${c.uniqueId} dependencies unresolved before its turn.`,
+            );
+          }
+          // Substitute ${env.X} before any write. computeOp already did this
+          // with strictEnv:true, so if we got here it's safe.
+          const resolved = rawResolved ? substituteEnv(rawResolved) : rawResolved;
+          switch (op.kind) {
+            case "noop": {
+              process.stdout.write(`  ${pc.gray("noop")}     ${c.uniqueId}\n`);
+              if (op.currentId) {
+                const existing = state.resources[c.uniqueId];
+                deployed.set(c.uniqueId, {
+                  salesforceId: op.currentId,
+                  apiName: existing?.apiName ?? c.id,
+                });
+              }
+              break;
             }
-            break;
-          }
-          case "adopt": {
-            process.stdout.write(`  ${pc.yellow("adopt")}    ${c.uniqueId}\n`);
-            // For adopt we need the live API name, not the authored one.
-            // The caller already looked it up via lookupByProps — currentId is
-            // the Salesforce id, and apiName comes from re-reading to be safe.
-            const live = await c.resource.read(ctx, op.currentId!);
-            const apiName = apiNameFromOutput(live, c.id);
-            deployed.set(c.uniqueId, { salesforceId: op.currentId!, apiName });
-            state.resources[c.uniqueId] = stateEntry(c, op.currentId!, apiName, op.plannedHash, state.resources[c.uniqueId]);
-            wrote += 1;
-            break;
-          }
-          case "recreate": {
-            process.stdout.write(`  ${pc.red("recreate")} ${c.uniqueId}\n`);
-            if (op.currentId) {
-              await c.resource.delete(ctx, op.currentId);
+            case "adopt": {
+              process.stdout.write(`  ${pc.yellow("adopt")}    ${c.uniqueId}\n`);
+              // For adopt we need the live API name, not the authored one.
+              // The caller already looked it up via lookupByProps — currentId is
+              // the Salesforce id, and apiName comes from re-reading to be safe.
+              const live = await c.resource.read(ctx, op.currentId!);
+              const apiName = apiNameFromOutput(live, c.id);
+              deployed.set(c.uniqueId, { salesforceId: op.currentId!, apiName });
+              state.resources[c.uniqueId] = stateEntry(c, op.currentId!, apiName, op.plannedHash, state.resources[c.uniqueId]);
+              wrote += 1;
+              break;
             }
-            const output = await c.resource.create(ctx, resolved as never);
-            await maybeWaitReady(ctx, c, output);
-            const id = c.resource.idOf(output);
-            const apiName = apiNameFromOutput(output, c.id);
-            deployed.set(c.uniqueId, { salesforceId: id, apiName });
-            state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
-            wrote += 1;
-            break;
-          }
-          case "create": {
-            process.stdout.write(`  ${pc.green("create")}   ${c.uniqueId}\n`);
-            const output = await c.resource.create(ctx, resolved as never);
-            await maybeWaitReady(ctx, c, output);
-            const id = c.resource.idOf(output);
-            const apiName = apiNameFromOutput(output, c.id);
-            deployed.set(c.uniqueId, { salesforceId: id, apiName });
-            state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
-            wrote += 1;
-            break;
-          }
-          default: {
-            const _exhaustive: never = op.kind;
-            throw new Error(`Unknown op: ${String(_exhaustive)}`);
+            case "recreate": {
+              process.stdout.write(`  ${pc.red("recreate")} ${c.uniqueId}\n`);
+              if (op.currentId) {
+                await c.resource.delete(ctx, op.currentId);
+                // Clear the stale id the moment the delete returns — if the
+                // subsequent create fails (e.g. async-delete name lock, see
+                // feedback_connection-recreate-duplicate-race.md), the next
+                // deploy sees no id and falls through cleanly to create
+                // instead of trying to read the gone resource first.
+                delete state.resources[c.uniqueId];
+              }
+              const output = await c.resource.create(ctx, resolved as never);
+              await maybeWaitReady(ctx, c, output);
+              const id = c.resource.idOf(output);
+              const apiName = apiNameFromOutput(output, c.id);
+              deployed.set(c.uniqueId, { salesforceId: id, apiName });
+              state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, undefined);
+              wrote += 1;
+              break;
+            }
+            case "create": {
+              process.stdout.write(`  ${pc.green("create")}   ${c.uniqueId}\n`);
+              const output = await c.resource.create(ctx, resolved as never);
+              await maybeWaitReady(ctx, c, output);
+              const id = c.resource.idOf(output);
+              const apiName = apiNameFromOutput(output, c.id);
+              deployed.set(c.uniqueId, { salesforceId: id, apiName });
+              state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
+              wrote += 1;
+              break;
+            }
+            default: {
+              const _exhaustive: never = op.kind;
+              throw new Error(`Unknown op: ${String(_exhaustive)}`);
+            }
           }
         }
+      } finally {
+        state.lastDeployedAt = new Date().toISOString();
+        await writeState(orgAlias, state);
       }
-
-      state.lastDeployedAt = new Date().toISOString();
-      await writeState(orgAlias, state);
       process.stdout.write(
         `${pc.bold("done")}  ${summarizeOps(ops)} — ${wrote} write${wrote === 1 ? "" : "s"}; state saved.\n`,
       );
