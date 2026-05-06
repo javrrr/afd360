@@ -30,14 +30,19 @@ describe("afd360 init", () => {
     await rm(workdir, { recursive: true, force: true });
   });
 
-  it("copies the starter template into a new directory", async () => {
+  it("copies the starter template into a new directory, restoring dotfiles", async () => {
     const target = join(workdir, "my-project");
     await runInit(target);
-    // All 4 template files present.
+    // All 4 template files present. `.gitignore` and `.env.example` are
+    // stored in the template as `gitignore` / `env.example` because npm
+    // pack drops dotfiles; init restores the leading dot on copy.
     for (const f of ["afd360.config.ts", ".env.example", ".gitignore", "package.json"]) {
       const info = await stat(join(target, f));
       expect(info.isFile()).toBe(true);
     }
+    // The un-dotted source names must NOT leak into the output.
+    await expect(stat(join(target, "gitignore"))).rejects.toThrow();
+    await expect(stat(join(target, "env.example"))).rejects.toThrow();
     // Manifest is non-empty and imports from "afd360".
     const manifest = await readFile(join(target, "afd360.config.ts"), "utf8");
     expect(manifest).toContain('from "afd360"');
