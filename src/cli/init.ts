@@ -84,7 +84,11 @@ async function copyTree(src: string, dest: string): Promise<void> {
   const entries = await readdir(src);
   for (const name of entries) {
     const from = join(src, name);
-    const to = join(dest, name);
+    // npm drops dotfiles from `files:` globs during `npm pack`, so the
+    // template stores `gitignore` / `env.example` without the leading dot
+    // and we restore it on copy. Any entry in DOTFILE_RENAMES gets a `.`
+    // prepended at the destination.
+    const to = join(dest, DOTFILE_RENAMES[name] ?? name);
     const info = await stat(from);
     if (info.isDirectory()) {
       await copyTree(from, to);
@@ -93,3 +97,8 @@ async function copyTree(src: string, dest: string): Promise<void> {
     }
   }
 }
+
+const DOTFILE_RENAMES: Record<string, string> = {
+  "gitignore": ".gitignore",
+  "env.example": ".env.example",
+};
