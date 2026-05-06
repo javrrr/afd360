@@ -6,6 +6,7 @@ import { retryOn5xx, errBodyIncludes, isNotFound } from "../client/retry.js";
 import { pollUntil } from "../core/poll.js";
 import { DataStream } from "./data-stream.js";
 import { DMO } from "./dmo.js";
+import { attachMappingToSearchIndexes } from "./search-index.js";
 
 /**
  * A DLO-field → DMO-field pair. Platform uses `__c` suffix on both sides.
@@ -247,6 +248,13 @@ export class Mapping extends Construct {
       props.target,
       ...(opts.dependsOn ?? []),
     ];
+    // Reciprocal wiring: tell any SearchIndex sibling that targets the same
+    // DMO to depend on this Mapping. Without this, SearchIndex can run in
+    // parallel with Mapping under topo sort and time out waiting for source
+    // data that hasn't been mapped yet. Order-independent: SearchIndex's
+    // own constructor scans for already-built Mappings; this scans for
+    // already-built SearchIndexes.
+    attachMappingToSearchIndexes(scope, this);
   }
 
   /**
