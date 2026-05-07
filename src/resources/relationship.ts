@@ -1,4 +1,7 @@
-import type { Data360Client } from "data-360-sdk";
+import type {
+  Data360Client,
+  FieldSrcTrgtRelationshipInputRepresentation,
+} from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
@@ -10,15 +13,21 @@ import type { Mapping } from "./mapping.js";
  * Cardinality of the foreign-key relationship. ManyToOne is the common case
  * (e.g. many transaction DMO rows → one account DMO row). OneToOne enforces
  * a unique constraint on the source field.
+ *
+ * Sourced from the SDK. afd360 always supplies a value (default "ManyToOne")
+ * so the SDK's required `cardinality` field doesn't need NonNullable.
  */
-export type RelationshipCardinality = "ManyToOne" | "OneToOne";
+export type RelationshipCardinality = FieldSrcTrgtRelationshipInputRepresentation["cardinality"];
 
 /**
  * Who owns the relationship record. DataCloud is the normal case for custom
  * DMOs. Sobject indicates the relationship originates from a CRM object's
  * lookup/master-detail field and is synced in from Salesforce Core.
+ *
+ * Sourced from the SDK. SDK marks the field optional; afd360 always supplies
+ * a value (default "DataCloud"), so we narrow with NonNullable.
  */
-export type RelationshipOwner = "DataCloud" | "Sobject";
+export type RelationshipOwner = NonNullable<FieldSrcTrgtRelationshipInputRepresentation["relationshipOwner"]>;
 
 export interface RelationshipProps {
   /** Source DMO construct. */

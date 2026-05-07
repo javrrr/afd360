@@ -1,4 +1,8 @@
-import type { Data360Client } from "data-360-sdk";
+import type {
+  Data360Client,
+  DataObjectInputRepresentation,
+  RefreshConfigInputRepresentation,
+} from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
@@ -9,8 +13,12 @@ import { ConnectionSchema } from "./connection-schema.js";
 /**
  * DLO category. Engagement vs Profile vs Other is a core Data Cloud distinction;
  * it drives downstream DMO mapping semantics. Default "Other" mirrors tdc.
+ *
+ * Sourced from the SDK so afd360 stays aligned with upstream regenerates.
+ * Defined as a non-optional narrowing of the SDK's `category?` enum — afd360
+ * always supplies a value (default "Other"), so the optionality drops out.
  */
-export type DloCategory = "Engagement" | "Profile" | "Other";
+export type DloCategory = NonNullable<DataObjectInputRepresentation["category"]>;
 
 /**
  * Supported connector types. Each maps to a different Connect API payload
@@ -130,7 +138,7 @@ export interface DataStreamProps {
    *   SNOWFLAKE: INCREMENTAL (requires `snowflake.incrementalColumn`) or
    *     TOTAL_REPLACE. UPSERT is not supported on federated Snowflake.
    */
-  readonly refreshMode?: "UPSERT" | "REPLACE" | "APPEND" | "INCREMENTAL" | "TOTAL_REPLACE";
+  readonly refreshMode?: NonNullable<RefreshConfigInputRepresentation["refreshMode"]>;
   /** Data space for the resulting DLO. "default" unless multi-tenant. */
   readonly dataSpace?: string;
   readonly primaryKey: DataStreamPrimaryKey;
@@ -169,7 +177,7 @@ export interface DataStreamResourceProps {
   readonly name: string;
   readonly label: string;
   readonly category: DloCategory;
-  readonly refreshMode: "UPSERT" | "REPLACE" | "APPEND" | "INCREMENTAL" | "TOTAL_REPLACE";
+  readonly refreshMode: NonNullable<RefreshConfigInputRepresentation["refreshMode"]>;
   readonly dataSpace: string;
   readonly primaryKey: DataStreamPrimaryKey;
   readonly eventDateTimeFieldName?: string;

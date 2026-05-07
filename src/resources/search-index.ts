@@ -1,4 +1,7 @@
-import type { Data360Client } from "data-360-sdk";
+import type {
+  Data360Client,
+  SemanticSearchInputRepresentation,
+} from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
@@ -8,13 +11,21 @@ import type { DMO } from "./dmo.js";
 /**
  * Search index type. HYBRID combines vector similarity with lexical ranking
  * (the Agentforce-RAG default). VECTOR is pure semantic similarity.
+ *
+ * Sourced from the SDK (narrowed in v0.2.9 via the SCHEMA_OVERRIDES
+ * fieldTypes mechanism); afd360 always supplies a value so the field is
+ * required at our layer.
  */
-export type SearchIndexSearchType = "HYBRID" | "VECTOR";
+export type SearchIndexSearchType = SemanticSearchInputRepresentation["searchType"];
 
 /**
  * Processing cadence. `NEAR_REALTIME` is the aporg KA_Knowledge default and
- * the only value the platform currently accepts through the Connect API on
- * jaygentforce (2026-05-05). `REALTIME` is reserved for future use.
+ * the only value the platform currently accepts through the Connect API.
+ * `REALTIME` is reserved for future use.
+ *
+ * SDK currently types this as a bare `string` (no spec narrowing); afd360
+ * keeps a stricter literal union for the user-facing surface. Tracked
+ * upstream in the SemanticSearchInputRepresentation override note.
  */
 export type SearchIndexProcessingType = "NEAR_REALTIME" | "REALTIME";
 

@@ -1,4 +1,7 @@
-import type { Data360Client } from "data-360-sdk";
+import type {
+  Data360Client,
+  DataObjectInputRepresentation,
+} from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
@@ -9,8 +12,12 @@ import { pollUntil } from "../core/poll.js";
  * DMO category. `Other` is the default. The Connect API accepts title-case
  * on create (matches `DataModelObjectInputRepresentation`) but returns
  * UPPERCASE on read ("OTHER"). afd360 normalizes comparisons, not input.
+ *
+ * Sourced from the SDK so afd360 stays aligned with upstream regenerates.
+ * Defined as a non-optional narrowing of the SDK's `category?` enum — afd360
+ * always supplies a value (default "Other"), so the optionality drops out.
  */
-export type DmoCategory = "Other" | "Engagement" | "Profile";
+export type DmoCategory = NonNullable<DataObjectInputRepresentation["category"]>;
 
 export interface DmoField {
   /** Field dev name without `__c` — platform adds it. */
