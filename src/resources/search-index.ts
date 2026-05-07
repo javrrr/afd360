@@ -467,10 +467,11 @@ export class SearchIndex extends Construct {
     this.dependsOn = [...autoDeps, ...(props.dependsOn ?? []), ...(opts.dependsOn ?? [])];
 
     // SearchIndex readiness is slow — provisioning a chunk+vector DMO plus
-    // the embedding job can take several minutes. Default 10 min poll
-    // window at 10s intervals.
+    // the embedding job takes 10-12 min on a freshly-mapped Snowflake DMO
+    // (observed on awt 2026-05-07: indexRefreshedOn ~12 min after create).
+    // 15 min default covers the observed tail; users can override per-stack.
     this.readyIntervalMs = opts.readyIntervalMs ?? 10_000;
-    this.readyTimeoutMs = opts.readyTimeoutMs ?? 600_000;
+    this.readyTimeoutMs = opts.readyTimeoutMs ?? 900_000;
   }
 }
 
