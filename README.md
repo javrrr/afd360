@@ -8,6 +8,12 @@ Mapping, Relationship, CalculatedInsight, SearchIndex). See
 [`PLAN.md`](./PLAN.md) for milestone history and
 [`docs/resources.md`](./docs/resources.md) for the resource reference.
 
+> **Building manifests with an AI coding assistant?** See
+> [`AGENTS.md`](./AGENTS.md) for operational guidance and
+> [`examples/`](./examples/) for scenario manifests. Both are designed
+> to give an agent enough context to generate accurate manifests on a
+> user's behalf without hallucinating field names or values.
+
 ## Quickstart
 
 Prerequisites: Node 20+, the `sf` CLI authenticated to a Data Cloud org.
