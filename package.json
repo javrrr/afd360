@@ -24,8 +24,11 @@
   "files": [
     "dist",
     "templates",
+    "examples",
+    "docs",
     "README.md",
-    "PRD.md"
+    "PRD.md",
+    "AGENTS.md"
   ],
   "sideEffects": false,
   "engines": {
