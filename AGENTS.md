@@ -239,6 +239,10 @@ invent. Specifically, always ask for:
 - **Field-mapping intent** when DLO column names don't trivially
   match DMO field names (e.g. CSV header "Customer ID" → DMO field
   "CustomerId").
+- **Primary-key field** when the user gave you a column list but
+  didn't mark which is the PK. "First column" / "column named Id"
+  are heuristics, not guarantees — confirm explicitly. Wrong PK at
+  deploy time produces a stream that can't UPSERT correctly.
 - **SearchIndex chunking fields** — which DMO fields hold the
   long-text the user wants indexed. The agent should propose
   candidates if the DMO schema is known, but always confirm.
@@ -349,6 +353,9 @@ Specific stuck states + what to ask the user:
   fully-qualified Snowflake source as `database.schema.object`?"
 - **Don't know DMO field names** → "Can you paste the output of
   `sf api request rest /services/data/v66.0/ssot/data-model-objects/<DMO name>`?"
+- **Don't know which column is the PK** → "Which column is the
+  primary key for this table?" The first column or one named "Id" is
+  often correct but not always — better to confirm than guess.
 - **User asked for something afd360 doesn't yet support** (e.g.
   Databricks DataStream, file-level chunking) → say so explicitly.
   Suggest the closest alternative or hand back a TODO comment in the
