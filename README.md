@@ -25,25 +25,29 @@ subdirectory.
 ### Standalone
 
 ```sh
-mkdir my-rag && cd my-rag
-npx afd360 init .            # scaffolds afd360.config.ts + .env.example
+mkdir my-data360 && cd my-data360
+npx afd360 init .            # scaffolds an empty manifest + .env.example
 npm install
-cp .env.example .env         # fill in AWS_ACCESS_KEY / AWS_ACCESS_SECRET
-# edit afd360.config.ts: set TARGET_ORG, SOURCE_BUCKET, SOURCE_FILE
+# edit afd360.config.ts to set TARGET_ORG and add resources
 ```
 
 ### Inside an SFDX project (recommended for Data Cloud + CRM development)
 
 Same pattern, just nested. Pick a subdirectory — `data360/` is the
-suggested convention — and run `afd360 init` inside it:
+suggested convention — and run `afd360 init` inside it via `npx`:
 
 ```sh
 cd my-sfdx-project
-afd360 init data360 && cd data360
+npx afd360 init data360 && cd data360
 npm install
 cp .env.example .env
 # edit afd360.config.ts
 ```
+
+Once `npm install` completes, afd360 lives in `data360/node_modules/`
+and you don't need `npx` again — `npx afd360 deploy` (or any other
+afd360 command) resolves to the project-local copy. afd360 doesn't
+require a global install at any point.
 
 Layout:
 
