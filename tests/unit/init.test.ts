@@ -43,11 +43,22 @@ describe("afd360 init", () => {
     // The un-dotted source names must NOT leak into the output.
     await expect(stat(join(target, "gitignore"))).rejects.toThrow();
     await expect(stat(join(target, "env.example"))).rejects.toThrow();
-    // Manifest is non-empty and imports from "afd360".
+    // Manifest imports the minimal scaffold — App + Stack only. The
+    // user (or their AI assistant) adds resources explicitly.
     const manifest = await readFile(join(target, "afd360.config.ts"), "utf8");
     expect(manifest).toContain('from "afd360"');
     expect(manifest).toContain("App");
-    expect(manifest).toContain("SearchIndex");
+    expect(manifest).toContain("Stack");
+    expect(manifest).toContain("export default app");
+    // Empty starter shouldn't import or instantiate any resource
+    // class. Comment lines that show example syntax are fine; what
+    // matters is the actual import list at the top.
+    const importLine = manifest.match(/import \{([^}]+)\} from "afd360"/);
+    expect(importLine).not.toBeNull();
+    const imports = importLine![1]!.split(",").map((s) => s.trim());
+    expect(imports).toEqual(expect.arrayContaining(["App", "Stack"]));
+    expect(imports).not.toContain("Connection");
+    expect(imports).not.toContain("SearchIndex");
   });
 
   it("refuses to overwrite an existing afd360.config.ts", async () => {

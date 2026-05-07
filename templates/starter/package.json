@@ -1,6 +1,4 @@
 {
-  "name": "afd360-starter",
-  "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
