@@ -14,9 +14,15 @@ Mapping, Relationship, CalculatedInsight, SearchIndex). See
 > to give an agent enough context to generate accurate manifests on a
 > user's behalf without hallucinating field names or values.
 
-## Quickstart
+## Project layout
 
-Prerequisites: Node 20+, the `sf` CLI authenticated to a Data Cloud org.
+afd360 is its own self-contained project — same convention as AWS CDK.
+A directory with `afd360.config.ts`, `package.json`, and `node_modules/`
+is one afd360 project. Don't try to host afd360 inside another project's
+file tree (e.g. an SFDX project's `force-app/`); keep it as a sibling
+subdirectory.
+
+### Standalone
 
 ```sh
 mkdir my-rag && cd my-rag
@@ -24,7 +30,48 @@ npx afd360 init .            # scaffolds afd360.config.ts + .env.example
 npm install
 cp .env.example .env         # fill in AWS_ACCESS_KEY / AWS_ACCESS_SECRET
 # edit afd360.config.ts: set TARGET_ORG, SOURCE_BUCKET, SOURCE_FILE
+```
 
+### Inside an SFDX project (recommended for Data Cloud + CRM development)
+
+Same pattern, just nested. Pick a subdirectory — `data360/` is the
+suggested convention — and run `afd360 init` inside it:
+
+```sh
+cd my-sfdx-project
+afd360 init data360 && cd data360
+npm install
+cp .env.example .env
+# edit afd360.config.ts
+```
+
+Layout:
+
+```
+my-sfdx-project/
+├── sfdx-project.json
+├── force-app/main/default/      ← Apex, permission sets, metadata-API content
+└── data360/                     ← afd360 subproject, fully self-contained
+    ├── package.json
+    ├── tsconfig.json
+    ├── afd360.config.ts
+    ├── .env (gitignored)
+    └── .afd360/state/
+```
+
+`force-app/` and `data360/` are independent — afd360 manifests use the
+Connect API, not the metadata API, so the two declarative surfaces don't
+overlap. Run afd360 commands from inside `data360/`.
+
+For multiple stacks (e.g. RAG vs. ingest, or prod vs. staging), create
+multiple subdirectories: `data360-rag/`, `data360-ingest/`. Each is its
+own afd360 project with its own state.
+
+### Deploy
+
+From inside the afd360 project directory (`my-rag/`, `data360/`, etc.):
+
+```sh
 npx afd360 whoami --org my-org
 npx afd360 diff --org my-org
 npx afd360 deploy --org my-org
@@ -34,6 +81,20 @@ Redeploys are idempotent — a clean manifest re-runs as `0 writes`. Drift on
 a parent resource (e.g. `ConnectionSchema`) cascades through children under
 v1's delete-and-recreate policy; `diff` flags cascades and `deploy`
 halts for y/N confirmation unless `--force` is set.
+
+## Prompting tips for AI assistants
+
+When you want an AI coding assistant (Claude, Cursor, Codex, etc.) to
+generate or edit an afd360 manifest, **mention afd360 by name in your
+first prompt**. Most agents don't auto-scan `node_modules/`, so without
+the package name they won't discover the SDK or its agent-targeted docs.
+
+A working prompt: *"Use afd360 to set up a Snowflake search index over
+our Products table."*
+
+The agent will read `node_modules/afd360/AGENTS.md` and the relevant
+example under `node_modules/afd360/examples/`, then ask you for the
+specifics it needs.
 
 ## Commands
 

@@ -22,6 +22,35 @@ This file plus `examples/` should cover ~80% of cases. Reach for the
 others when an example doesn't match the user's intent or types
 disagree with what you generated.
 
+## Project layout
+
+afd360 is a self-contained project, like AWS CDK. A directory with
+`afd360.config.ts`, `package.json`, and `node_modules/` is one afd360
+project. The user runs afd360 commands from inside that directory.
+
+If you're invoked inside an SFDX project (you'll see `sfdx-project.json`
+at the parent level and `force-app/` next to it), afd360 manifests
+should NOT live inside `force-app/`. The convention is to put them in a
+sibling subdirectory — `data360/` is the suggested name. Run
+`afd360 init data360` from the SFDX project root, then operate inside
+`data360/`.
+
+```
+my-sfdx-project/
+├── sfdx-project.json            ← user's SFDX project
+├── force-app/main/default/      ← Apex, metadata-API content (NOT afd360)
+└── data360/                     ← the afd360 project you're working in
+    ├── package.json             ← afd360 listed as a dep here
+    ├── afd360.config.ts         ← the manifest you're editing
+    └── .afd360/state/
+```
+
+When the user asks for changes, all paths you generate or reference
+(`afd360.config.ts`, `.env`, `.env.example`, `.afd360/state/`) are
+relative to the afd360 project directory, not the SFDX project root.
+For multi-stack setups, the convention is multiple subdirectories
+(`data360-rag/`, `data360-ingest/`), each a separate afd360 project.
+
 ## The mental model
 
 A manifest is a TypeScript file that builds a tree:
