@@ -93,6 +93,10 @@ coding assistants (Claude Code, Cursor, Codex, Gemini CLI, etc.) to
 generate accurate manifests. Install it once:
 
 ```sh
+# Claude Code:
+npx skills add javrrr/afd360 -a claude-code
+
+# All supported agents (Cursor, Codex, Gemini CLI, etc.):
 npx skills add javrrr/afd360
 ```
 
