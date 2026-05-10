@@ -1,6 +1,6 @@
 // Public SDK exports. Populated per milestone.
 
-export const VERSION = "0.0.1";
+export const VERSION = "0.1.0";
 
 export { App, Stack } from "./core/app.js";
 export type { Plan, PlanResource, StackProps } from "./core/app.js";
