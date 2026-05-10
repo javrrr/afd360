@@ -339,8 +339,14 @@ export const SearchIndexResource: Resource<SearchIndexResourceProps, SearchIndex
   async delete(ctx, id): Promise<void> {
     // Quirk C6 — DELETE by id, not developerName. The name-keyed path 404s.
     // The id is stored in state by `idOf`, so this path is safe.
+    //
+    // SearchIndex delete tears down chunk + vector DMOs server-side and
+    // can exceed the SDK's default 30s timeout. Bump to 120s to match
+    // the create timeout. Observed on awt 2026-05-07: delete timed out
+    // at 30s but the platform accepted the request (subsequent GET
+    // returned 500 = mid-teardown).
     try {
-      await retryOn5xx(() => ctx.client.searchIndex.delete(id));
+      await retryOn5xx(() => ctx.client.searchIndex.delete(id, { timeout: 120_000 }));
     } catch (err) {
       if (isNotFound(err)) return;
       throw err;
