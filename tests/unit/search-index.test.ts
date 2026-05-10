@@ -288,6 +288,24 @@ describe("SearchIndexResource.isReady", () => {
     ).resolves.toBe(true);
   });
 
+  it("returns true on SUBMITTED (index accepted and operational)", async () => {
+    const ctx = mockCtx();
+    await expect(
+      SearchIndexResource.isReady!(ctx, {
+        id: "x", developerName: "X", runtimeStatus: "SUBMITTED",
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("returns true on IN_PROGRESS (index actively processing chunks)", async () => {
+    const ctx = mockCtx();
+    await expect(
+      SearchIndexResource.isReady!(ctx, {
+        id: "x", developerName: "X", runtimeStatus: "IN_PROGRESS",
+      }),
+    ).resolves.toBe(true);
+  });
+
   it("throws on FAILED (terminal)", async () => {
     const ctx = mockCtx();
     await expect(
