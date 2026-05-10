@@ -42,7 +42,14 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:watch": "vitest",
-    "clean": "rm -rf dist .afd360/plan.json"
+    "clean": "rm -rf dist .afd360/plan.json",
+    "release:check": "npm run typecheck && npm run test && npm run build",
+    "release:version:patch": "npm version patch -m \"Bump package.json version to %s\"",
+    "release:version:minor": "npm version minor -m \"Bump package.json version to %s\"",
+    "release:version:major": "npm version major -m \"Bump package.json version to %s\"",
+    "release:push": "git push origin main --follow-tags",
+    "release:create": "gh release create \"v$npm_package_version\" --title \"v$npm_package_version\" --generate-notes",
+    "release:run": "npm run release:check && npm run release:push && npm run release:create"
   },
   "dependencies": {
     "@salesforce/core": "^8.29.0",
