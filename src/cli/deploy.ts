@@ -176,23 +176,29 @@ export function registerDeploy(program: Command): void {
                 delete state.resources[c.uniqueId];
               }
               const output = await c.resource.create(ctx, resolved as never);
-              await maybeWaitReady(ctx, c, output);
               const id = c.resource.idOf(output);
               const apiName = apiNameFromOutput(output, c.id);
+              // Persist state BEFORE the readiness poll. If isReady times
+              // out (SearchIndex can take 15+ min), the resource is still
+              // created on the org — the next deploy sees it in state, reads
+              // it, hashes match → noop. Without this, a poll timeout leaves
+              // the resource as an orphan that needs manual adoption.
               deployed.set(c.uniqueId, { salesforceId: id, apiName });
               state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, undefined);
               wrote += 1;
+              await maybeWaitReady(ctx, c, output);
               break;
             }
             case "create": {
               process.stdout.write(`  ${pc.green("create")}   ${c.uniqueId}\n`);
               const output = await c.resource.create(ctx, resolved as never);
-              await maybeWaitReady(ctx, c, output);
               const id = c.resource.idOf(output);
               const apiName = apiNameFromOutput(output, c.id);
+              // Same pattern: persist before poll. See recreate comment.
               deployed.set(c.uniqueId, { salesforceId: id, apiName });
               state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
               wrote += 1;
+              await maybeWaitReady(ctx, c, output);
               break;
             }
             default: {
@@ -259,6 +265,15 @@ function collectResources(scope: Construct): Array<Construct & ResourceConstruct
  * any) in a pollUntil loop. Constructs can override the defaults via
  * `readyIntervalMs` / `readyTimeoutMs` fields — e.g. DataStream uses 2s × 60s,
  * ConnectionSchema uses 10s × 120s.
+ *
+ * A poll timeout does NOT throw — state is already persisted (the caller
+ * writes state before calling this), so a timeout just means "the resource
+ * was created but we couldn't confirm it reached READY within our budget."
+ * The user sees a warning and the next deploy sees the resource in state,
+ * reads its live status, and either noops (if it reached READY) or
+ * surfaces the status via diff. This is a better UX than aborting the
+ * whole deploy on a slow-but-healthy resource (SearchIndex on a freshly
+ * mapped Snowflake DMO regularly takes 12–15 min).
  */
 async function maybeWaitReady<T>(
   ctx: ResourceContext,
@@ -270,10 +285,27 @@ async function maybeWaitReady<T>(
     (c as { readyIntervalMs?: number }).readyIntervalMs ?? 2_000;
   const timeoutMs =
     (c as { readyTimeoutMs?: number }).readyTimeoutMs ?? 120_000;
-  await pollUntil<true>(
-    async () => ((await c.resource.isReady!(ctx, output as never)) ? true : null),
-    { intervalMs, timeoutMs },
-  );
+  try {
+    await pollUntil<true>(
+      async () => ((await c.resource.isReady!(ctx, output as never)) ? true : null),
+      { intervalMs, timeoutMs },
+    );
+  } catch (err) {
+    // Terminal failures (e.g. SearchIndex FAILED, DataStream ERROR) are
+    // thrown by isReady itself and should propagate — they're real errors
+    // that need user attention. Poll *timeout* is different: the resource
+    // is created and may still be converging.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("timed out")) {
+      process.stderr.write(
+        `${pc.yellow("warn")}  ${c.uniqueId} — readiness poll timed out after ${Math.round(timeoutMs / 1000)}s. ` +
+          `Resource was created; it may still be converging. ` +
+          `Re-run \`afd360 diff\` or check the Data Cloud UI.\n`,
+      );
+      return;
+    }
+    throw err; // real failures (FAILED status, network errors) propagate
+  }
 }
 
 /**
