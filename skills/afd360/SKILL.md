@@ -18,16 +18,16 @@ metadata:
 
 ## Prerequisites — run these before generating a manifest
 
-The manifest `import { App } from "afd360"` requires a local
-`node_modules/afd360/`. Before writing any files, ensure the project
-directory has a `package.json` with afd360 installed. If it doesn't
-exist yet, **create it yourself** — don't skip this or the manifest
-will fail to load.
+The manifest uses `import { App } from "afd360"` (ES module syntax),
+which requires `"type": "module"` in `package.json` and
+`node_modules/afd360/` to exist. Before writing any files, set up the
+project directory. Use `npx afd360 init` — it creates the correct
+`package.json` (with `"type": "module"`) and an empty scaffold:
 
 ```sh
 # If no package.json exists in the target directory:
-npm init -y
-npm install afd360
+npx afd360 init .
+npm install
 ```
 
 If working inside an SFDX project, create a sibling subdirectory
@@ -35,9 +35,12 @@ If working inside an SFDX project, create a sibling subdirectory
 
 ```sh
 mkdir -p data360 && cd data360
-npm init -y
-npm install afd360
+npx afd360 init .
+npm install
 ```
+
+**Do NOT use `npm init -y` — it defaults to `"type": "commonjs"` which
+breaks ES module imports. Always use `npx afd360 init .` instead.**
 
 Result:
 

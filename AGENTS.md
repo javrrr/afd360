@@ -25,20 +25,24 @@ disagree with what you generated.
 ## Project layout — CRITICAL: set up before generating files
 
 afd360 is a self-contained project, like AWS CDK. A directory with
-`package.json`, `node_modules/afd360/`, and `afd360.config.ts` is one
-afd360 project. **The manifest does `import { App } from "afd360"`,
-so `node_modules/afd360/` MUST exist in the project directory before
-the manifest can load.** If you skip this, every afd360 command fails
-with "Cannot find module 'afd360'".
+`package.json` (with `"type": "module"`), `node_modules/afd360/`, and
+`afd360.config.ts` is one afd360 project. **The manifest uses
+`import { App } from "afd360"` (ES module syntax), so both
+`"type": "module"` in package.json AND `node_modules/afd360/` MUST
+exist before the manifest can load.**
 
-Before generating any files, ensure the target directory is set up:
+Before generating any files, set up the target directory using
+`npx afd360 init` — it creates the correct `package.json`:
 
 ```sh
 # If no package.json exists:
 mkdir -p data360 && cd data360
-npm init -y
-npm install afd360
+npx afd360 init .
+npm install
 ```
+
+**Do NOT use `npm init -y` — it defaults to `"type": "commonjs"` which
+breaks ES module imports. Always use `npx afd360 init .` instead.**
 
 If you're invoked inside an SFDX project (you'll see `sfdx-project.json`
 at the parent level and `force-app/` next to it), afd360 manifests
