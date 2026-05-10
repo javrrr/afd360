@@ -20,21 +20,16 @@ metadata:
 
 The manifest uses `import { App } from "afd360"` (ES module syntax),
 which requires `"type": "module"` in `package.json` and
-`node_modules/afd360/` to exist. Before writing any files, set up the
-project directory. Use `npx afd360 init` — it creates the correct
-`package.json` (with `"type": "module"`) and an empty scaffold:
+`node_modules/afd360/` to exist.
+
+**Always generate files in the CURRENT working directory.** Do NOT
+create subdirectories — if the user wants a `data360/` subdir, they
+will `cd` into it before invoking you.
+
+If the current directory doesn't have a `package.json` with
+`"type": "module"` and afd360 installed, run this first:
 
 ```sh
-# If no package.json exists in the target directory:
-npx afd360 init .
-npm install
-```
-
-If working inside an SFDX project, create a sibling subdirectory
-(not inside `force-app/`) and set it up there:
-
-```sh
-mkdir -p data360 && cd data360
 npx afd360 init .
 npm install
 ```
@@ -42,22 +37,16 @@ npm install
 **Do NOT use `npm init -y` — it defaults to `"type": "commonjs"` which
 breaks ES module imports. Always use `npx afd360 init .` instead.**
 
-Result:
+After init + install, the directory will contain:
 
 ```
-my-sfdx-project/
-├── sfdx-project.json
-├── force-app/              ← CRM metadata (NOT afd360)
-└── data360/                ← afd360 project
-    ├── package.json        ← must exist with afd360 as a dep
-    ├── node_modules/       ← must contain afd360
-    ├── afd360.config.ts
-    ├── .env.example
-    └── .afd360/state/
+├── package.json        ← "type": "module", afd360 as dep
+├── node_modules/       ← contains afd360
+├── afd360.config.ts    ← empty scaffold — you'll overwrite this
+└── .env.example
 ```
 
-Generate the `afd360.config.ts` and `.env.example` inside this
-directory. All `npx afd360` commands must be run from here.
+Generate files here. Run all `npx afd360` commands from here.
 
 ## Mental model
 
