@@ -1,6 +1,6 @@
 {
   "name": "afd360",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Manifest-driven IaC for Salesforce Data Cloud / Agentforce — declare connections, data streams, DMOs, mappings, and search indexes in TypeScript and deploy idempotently.",
   "type": "module",
   "main": "./dist/index.cjs",
