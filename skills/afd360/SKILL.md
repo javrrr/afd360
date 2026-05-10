@@ -16,26 +16,45 @@ metadata:
   last_updated: "2026-05-07"
 ---
 
-## Prerequisites
+## Prerequisites — run these before generating a manifest
 
-The afd360 npm package must be installed in the user's project:
+The manifest `import { App } from "afd360"` requires a local
+`node_modules/afd360/`. Before writing any files, ensure the project
+directory has a `package.json` with afd360 installed. If it doesn't
+exist yet, **create it yourself** — don't skip this or the manifest
+will fail to load.
 
 ```sh
+# If no package.json exists in the target directory:
+npm init -y
 npm install afd360
 ```
 
-If working inside an SFDX project, afd360 lives in a sibling subdirectory
-(not inside `force-app/`):
+If working inside an SFDX project, create a sibling subdirectory
+(not inside `force-app/`) and set it up there:
+
+```sh
+mkdir -p data360 && cd data360
+npm init -y
+npm install afd360
+```
+
+Result:
 
 ```
 my-sfdx-project/
 ├── sfdx-project.json
 ├── force-app/              ← CRM metadata (NOT afd360)
 └── data360/                ← afd360 project
-    ├── package.json
+    ├── package.json        ← must exist with afd360 as a dep
+    ├── node_modules/       ← must contain afd360
     ├── afd360.config.ts
+    ├── .env.example
     └── .afd360/state/
 ```
+
+Generate the `afd360.config.ts` and `.env.example` inside this
+directory. All `npx afd360` commands must be run from here.
 
 ## Mental model
 

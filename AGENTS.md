@@ -22,34 +22,44 @@ This file plus `examples/` should cover ~80% of cases. Reach for the
 others when an example doesn't match the user's intent or types
 disagree with what you generated.
 
-## Project layout
+## Project layout — CRITICAL: set up before generating files
 
 afd360 is a self-contained project, like AWS CDK. A directory with
-`afd360.config.ts`, `package.json`, and `node_modules/` is one afd360
-project. The user runs afd360 commands from inside that directory.
+`package.json`, `node_modules/afd360/`, and `afd360.config.ts` is one
+afd360 project. **The manifest does `import { App } from "afd360"`,
+so `node_modules/afd360/` MUST exist in the project directory before
+the manifest can load.** If you skip this, every afd360 command fails
+with "Cannot find module 'afd360'".
+
+Before generating any files, ensure the target directory is set up:
+
+```sh
+# If no package.json exists:
+mkdir -p data360 && cd data360
+npm init -y
+npm install afd360
+```
 
 If you're invoked inside an SFDX project (you'll see `sfdx-project.json`
 at the parent level and `force-app/` next to it), afd360 manifests
-should NOT live inside `force-app/`. The convention is to put them in a
-sibling subdirectory — `data360/` is the suggested name. Run
-`afd360 init data360` from the SFDX project root, then operate inside
-`data360/`.
+should NOT live inside `force-app/`. The convention is a sibling
+subdirectory — `data360/` is the suggested name.
 
 ```
 my-sfdx-project/
 ├── sfdx-project.json            ← user's SFDX project
 ├── force-app/main/default/      ← Apex, metadata-API content (NOT afd360)
 └── data360/                     ← the afd360 project you're working in
-    ├── package.json             ← afd360 listed as a dep here
+    ├── package.json             ← must exist with afd360 as a dep
+    ├── node_modules/            ← must contain afd360
     ├── afd360.config.ts         ← the manifest you're editing
+    ├── .env.example
     └── .afd360/state/
 ```
 
-When the user asks for changes, all paths you generate or reference
-(`afd360.config.ts`, `.env`, `.env.example`, `.afd360/state/`) are
-relative to the afd360 project directory, not the SFDX project root.
-For multi-stack setups, the convention is multiple subdirectories
-(`data360-rag/`, `data360-ingest/`), each a separate afd360 project.
+Generate the `afd360.config.ts` and `.env.example` inside this
+directory. All paths are relative to it, not the SFDX project root.
+All `npx afd360` commands must be run from here.
 
 ## The mental model
 
