@@ -506,8 +506,14 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
     >[0];
     // Quirk A1: "Illegal argument" on create is transient — schema
     // provisioning lag. tdc retries 6 × 15s. We preserve 5xx baseline too.
+    // Also retry "required attributes [...] are null" — Snowflake BYOL
+    // connections need a brief settling window after create before the
+    // first DataStream can use them. The connector's session binding
+    // isn't propagated yet even though Connection.status=Active.
     const shouldRetry = (err: unknown): boolean =>
-      errBodyIncludes(err, "Illegal argument") || is5xx(err);
+      errBodyIncludes(err, "Illegal argument") ||
+      errBodyIncludes(err, "required attributes") ||
+      is5xx(err);
     const result = await retryOn(() => ctx.client.dataStreams.create(body), shouldRetry, {
       attempts: 6,
       intervalMs: 15_000,
