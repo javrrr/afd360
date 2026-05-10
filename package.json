@@ -1,7 +1,7 @@
 {
   "name": "afd360",
-  "version": "0.0.1",
-  "description": "Agentforce Data 360 SDK — declare Data 360 configurations in a manifest, deploy them to a Salesforce org.",
+  "version": "0.1.0",
+  "description": "Manifest-driven IaC for Salesforce Data Cloud / Agentforce — declare connections, data streams, DMOs, mappings, and search indexes in TypeScript and deploy idempotently.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -65,9 +65,23 @@
     "data-360",
     "agentforce",
     "sdk",
-    "iac"
+    "iac",
+    "manifest",
+    "rag",
+    "search-index",
+    "dmo",
+    "data-stream",
+    "snowflake",
+    "s3"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/javrrr/afd360.git"
+  },
+  "homepage": "https://github.com/javrrr/afd360#readme",
+  "bugs": {
+    "url": "https://github.com/javrrr/afd360/issues"
+  },
   "author": "javrrr",
-  "license": "UNLICENSED",
-  "private": true
+  "license": "MIT"
 }
