@@ -86,19 +86,30 @@ a parent resource (e.g. `ConnectionSchema`) cascades through children under
 v1's delete-and-recreate policy; `diff` flags cascades and `deploy`
 halts for y/N confirmation unless `--force` is set.
 
-## Prompting tips for AI assistants
+## AI-assisted manifest generation
 
-When you want an AI coding assistant (Claude, Cursor, Codex, etc.) to
-generate or edit an afd360 manifest, **mention afd360 by name in your
-first prompt**. Most agents don't auto-scan `node_modules/`, so without
-the package name they won't discover the SDK or its agent-targeted docs.
+afd360 ships an [Agent Skill](https://agentskills.io) that teaches AI
+coding assistants (Claude Code, Cursor, Codex, Gemini CLI, etc.) to
+generate accurate manifests. Install it once:
 
-A working prompt: *"Use afd360 to set up a Snowflake search index over
-our Products table."*
+```sh
+npx skills add javrrr/afd360
+```
 
-The agent will read `node_modules/afd360/AGENTS.md` and the relevant
-example under `node_modules/afd360/examples/`, then ask you for the
-specifics it needs.
+Then invoke from your AI assistant:
+
+```
+/afd360 set up a Snowflake search index over our Products table
+```
+
+The skill carries connector-specific recipes, anti-pattern guardrails,
+env-var conventions, and example manifests — enough for the agent to
+generate a working `afd360.config.ts` without hallucinating field names
+or values.
+
+> **Without the skill installed**, mention afd360 by name in your prompt
+> so the agent discovers the package docs in `node_modules/afd360/`.
+> See [`AGENTS.md`](./AGENTS.md) for the full operational reference.
 
 ## Commands
 
