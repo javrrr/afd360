@@ -254,7 +254,7 @@ describe("SearchIndexResource.delete", () => {
     const del = ctx.client.searchIndex.delete as ReturnType<typeof vi.fn>;
     del.mockResolvedValue(undefined);
     await SearchIndexResource.delete(ctx, "18l0000000X");
-    expect(del).toHaveBeenCalledWith("18l0000000X");
+    expect(del).toHaveBeenCalledWith("18l0000000X", { timeout: 120_000 });
   });
 
   it("swallows 404 as idempotent success", async () => {
