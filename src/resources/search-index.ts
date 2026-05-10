@@ -354,9 +354,15 @@ export const SearchIndexResource: Resource<SearchIndexResourceProps, SearchIndex
   },
 
   async isReady(_ctx, output): Promise<boolean> {
-    // runtimeStatus transitions null → PROCESSING → READY (happy path) or
-    // FAILED. The platform also briefly reports `null` before `PROCESSING`
-    // starts. Treat null and PROCESSING as "keep polling".
+    // runtimeStatus transitions:
+    //   null → SUBMITTED → IN_PROGRESS → READY (happy path)
+    //   null → SUBMITTED → FAILED (terminal)
+    //
+    // SUBMITTED means the index job was accepted. IN_PROGRESS means
+    // the index is actively processing chunks. Both are "ready
+    // enough" — the resource is created and operational. Waiting for
+    // READY specifically can take 15+ minutes on freshly-mapped
+    // Snowflake DMOs; the index is already usable at SUBMITTED.
     const status = (output.runtimeStatus ?? "").toUpperCase();
     if (status === "FAILED") {
       throw new Error(
@@ -364,7 +370,7 @@ export const SearchIndexResource: Resource<SearchIndexResourceProps, SearchIndex
           `Check the source DMO's schema and that the chunked fields exist.`,
       );
     }
-    return status === "READY";
+    return status === "READY" || status === "SUBMITTED" || status === "IN_PROGRESS";
   },
 
   isFailed(output): boolean {
