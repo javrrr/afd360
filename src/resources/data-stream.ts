@@ -24,9 +24,10 @@ export type DloCategory = NonNullable<DataObjectInputRepresentation["category"]>
  * Supported connector types. Each maps to a different Connect API payload
  * shape (`datastreamType`, `connectorInfo.connectorDetails`, and sometimes
  * `advancedAttributes`). M4 wired up IngestApi; M5 adds AwsS3; M11.1 adds
- * SNOWFLAKE (federated — platform introspects the source table schema).
+ * SNOWFLAKE (federated — platform introspects the source table schema);
+ * M11.2 adds BIGQUERY (also federated, same Direct_Access BYOL family).
  */
-export type DataStreamConnectorType = "IngestApi" | "AwsS3" | "SNOWFLAKE";
+export type DataStreamConnectorType = "IngestApi" | "AwsS3" | "SNOWFLAKE" | "BIGQUERY";
 
 export interface DataStreamPrimaryKey {
   readonly name: string;
@@ -120,13 +121,50 @@ export interface SnowflakeStreamAttributes {
   readonly fields: ReadonlyArray<SourceFieldMapping>;
 }
 
+/**
+ * BIGQUERY-specific advanced attributes. `project`, `dataset`, and `table`
+ * identify the source table inside BigQuery (NOT on the connection — the
+ * connection only carries auth + project, so the same BigQuery connection
+ * can feed many streams against different tables).
+ *
+ * BigQuery rides the same Direct_Access BYOL pipeline as Snowflake (see
+ * data-360-sdk DataStreamInputRepresentation override comment). Wire shape
+ * mirrors Snowflake almost exactly — only the advancedAttributes keys
+ * differ (project/dataset/table vs database/schema/object).
+ *
+ * The `fields` list is required despite federation, same as Snowflake.
+ */
+export interface BigQueryStreamAttributes {
+  /** GCP project ID hosting the BigQuery dataset. */
+  readonly project: string;
+  /** BigQuery dataset (the equivalent of Snowflake's "schema"). */
+  readonly dataset: string;
+  /** BigQuery table or view name. */
+  readonly table: string;
+  /**
+   * Column name to use for incremental loads (refreshMode=INCREMENTAL).
+   * Typically a monotonically-increasing TIMESTAMP or DATETIME column. Omit
+   * for TOTAL_REPLACE refresh modes.
+   */
+  readonly incrementalColumn?: string;
+  /**
+   * Source columns and their mapping into the DLO. REQUIRED — even though
+   * BigQuery is federated, the platform's Direct_Access path expects
+   * `sourceFields[]` and `mappings[]` on create (consistent with Snowflake's
+   * behavior on awt 2026-05-06). Declare the BigQuery columns to pull.
+   */
+  readonly fields: ReadonlyArray<SourceFieldMapping>;
+}
+
 export interface DataStreamProps {
   readonly connection: Connection;
   /** Logical name of the source object:
    *  - IngestApi: schema object name (matches ConnectionSchema.schemaName).
    *  - AwsS3: a stable identifier for the stream; used for the DLO name.
    *  - SNOWFLAKE: user-facing identifier; separate from `snowflake.object`
-   *    (the Snowflake table name). Used to name the DLO. */
+   *    (the Snowflake table name). Used to name the DLO.
+   *  - BIGQUERY: user-facing identifier; separate from `bigquery.table`
+   *    (the BigQuery table name). Used to name the DLO. */
   readonly sourceObject: string;
   /** Developer name; falls back to the construct logical id. */
   readonly name?: string;
@@ -137,6 +175,8 @@ export interface DataStreamProps {
    *   IngestApi / AwsS3: UPSERT
    *   SNOWFLAKE: INCREMENTAL (requires `snowflake.incrementalColumn`) or
    *     TOTAL_REPLACE. UPSERT is not supported on federated Snowflake.
+   *   BIGQUERY: INCREMENTAL (requires `bigquery.incrementalColumn`) or
+   *     TOTAL_REPLACE. UPSERT is not supported on federated BigQuery.
    */
   readonly refreshMode?: NonNullable<RefreshConfigInputRepresentation["refreshMode"]>;
   /** Data space for the resulting DLO. "default" unless multi-tenant. */
@@ -157,6 +197,11 @@ export interface DataStreamProps {
    * connection's connectorType is SNOWFLAKE.
    */
   readonly snowflake?: SnowflakeStreamAttributes;
+  /**
+   * BIGQUERY-only: which table to pull from. Required when the parent
+   * connection's connectorType is BigQuery.
+   */
+  readonly bigquery?: BigQueryStreamAttributes;
 }
 
 export interface DataStreamOutput {
@@ -183,12 +228,14 @@ export interface DataStreamResourceProps {
   readonly eventDateTimeFieldName?: string;
   readonly s3?: AwsS3StreamAttributes;
   readonly snowflake?: SnowflakeStreamAttributes;
+  readonly bigquery?: BigQueryStreamAttributes;
 }
 
 function buildCreatePayload(p: DataStreamResourceProps): unknown {
   if (p.connectorType === "IngestApi") return buildIngestApiPayload(p);
   if (p.connectorType === "AwsS3") return buildAwsS3Payload(p);
   if (p.connectorType === "SNOWFLAKE") return buildSnowflakePayload(p);
+  if (p.connectorType === "BIGQUERY") return buildBigQueryPayload(p);
   // Exhaustive check — future connector types land here.
   const _exhaustive: never = p.connectorType;
   throw new Error(`DataStream connectorType "${String(_exhaustive)}" is not supported yet.`);
@@ -421,6 +468,114 @@ function buildSnowflakePayload(p: DataStreamResourceProps): unknown {
   };
 }
 
+/**
+ * BIGQUERY is federated — same Direct_Access BYOL pipeline as Snowflake.
+ * The create payload only identifies the source table (project/dataset/table)
+ * and PK; column schema is declared in `bigquery.fields` (the platform's
+ * Direct_Access path requires sourceFields[]+mappings[] just like Snowflake).
+ *
+ * Wire shape derived from data-360-sdk DataStreamInputRepresentation
+ * override comment:
+ *   "dataAccessMode='Direct_Access' is required for federated/BYOL connectors
+ *    (Snowflake, Databricks, BigQuery, Iceberg) — without it the server
+ *    returns `400 INTERNAL_ERROR: Unable to post Data Stream:
+ *    DATA_CONNECTORS is not supported` even when the connector is GA.
+ *    Direct_Access streams must also OMIT the top-level `datasource` field."
+ *
+ * advancedAttributes keys (project/dataset/table) match the BigQuery
+ * connector metadata's lowercase form. If a deploy ever fails on the
+ * connector side, the keys to suspect first are these. (Snowflake
+ * empirically uses lowercase database/schema/object on the create payload
+ * even though the connector metadata reports UPPERCASE — same gotcha may
+ * apply to BigQuery.)
+ */
+function buildBigQueryPayload(p: DataStreamResourceProps): unknown {
+  if (!p.bigquery) {
+    throw new Error(
+      `DataStream "${p.name}": connectorType=BIGQUERY requires bigquery attributes ` +
+        `({ project, dataset, table, incrementalColumn?, fields }).`,
+    );
+  }
+  const bigqueryFields = p.bigquery.fields;
+  if (!bigqueryFields || bigqueryFields.length === 0) {
+    throw new Error(
+      `DataStream "${p.name}": bigquery.fields is required. Despite being ` +
+        `federated, the platform's Direct_Access path rejects creates without ` +
+        `sourceFields. Declare the BigQuery columns you want to pull.`,
+    );
+  }
+  const pkFields = bigqueryFields.filter((f) => f.isPrimaryKey);
+  if (pkFields.length !== 1) {
+    throw new Error(
+      `DataStream "${p.name}": bigquery.fields must contain exactly one isPrimaryKey field (got ${pkFields.length}).`,
+    );
+  }
+  const dloNameFor = (f: SourceFieldMapping): string =>
+    f.dloName ?? f.name.replace(/\s+/g, "_");
+  // BigQuery uses the SAME advancedAttributes keys as Snowflake — `database`,
+  // `schema`, `object` — NOT BigQuery-native `project`/`dataset`/`table`.
+  // The Connect API's Direct_Access path is generic and uses Snowflake-style
+  // names everywhere. Probed against awt 2026-06-11; sending `project` /
+  // `dataset` / `table` returns:
+  //   INVALID_ARGUMENT: database cannot be empty in advanced attr
+  // Mapping is intuitive: BigQuery dataset acts as Snowflake's schema,
+  // BigQuery table is Snowflake's object. Project ID lives on the
+  // Connection (parameters.projectId), not on the stream.
+  const advancedAttributes: Record<string, unknown> = {
+    database: p.bigquery.project,
+    schema: p.bigquery.dataset,
+    object: p.bigquery.table,
+  };
+  if (p.bigquery.incrementalColumn) {
+    advancedAttributes["incrementalColumn"] = p.bigquery.incrementalColumn;
+  }
+  const dlo: Record<string, unknown> = {
+    label: p.sourceObject,
+    name: `${p.sourceObject}__dll`,
+    category: p.category,
+    dataspaceInfo: [{ name: p.dataSpace }],
+    dataLakeFieldInputRepresentations: bigqueryFields.map((f) => ({
+      name: dloNameFor(f),
+      label: f.name,
+      dataType: f.dataType,
+      isPrimaryKey: !!f.isPrimaryKey,
+    })),
+  };
+  if (p.category === "Engagement") {
+    if (!p.eventDateTimeFieldName) {
+      throw new Error(
+        `DataStream "${p.name}": category=Engagement requires eventDateTimeFieldName.`,
+      );
+    }
+    dlo["eventDateTimeFieldName"] = p.eventDateTimeFieldName;
+  }
+  return {
+    name: p.name,
+    label: p.label,
+    // Direct_Access BYOL — same routing as Snowflake (see buildSnowflakePayload
+    // for the full rationale + observed-error story).
+    dataAccessMode: "Direct_Access",
+    datastreamType: "DATA_CONNECTORS",
+    connectorInfo: {
+      connectorType: "DataConnector",
+      connectorDetails: { name: p.connectionName },
+    },
+    advancedAttributes,
+    sourceFields: bigqueryFields.map((f) => {
+      const sf: Record<string, unknown> = { name: f.name, dataType: f.dataType };
+      if (f.format) sf["format"] = f.format;
+      return sf;
+    }),
+    mappings: bigqueryFields.map((f) => ({
+      sourceFieldLabel: f.name,
+      targetFieldName: dloNameFor(f),
+      targetFieldReturntype: f.dataType,
+    })),
+    dataLakeObjectInfo: dlo,
+    refreshConfig: { refreshMode: p.refreshMode },
+  };
+}
+
 function pkFieldRep(pk: DataStreamPrimaryKey): unknown {
   return {
     name: pk.name,
@@ -435,9 +590,13 @@ function inferConnectorType(conn: Connection): DataStreamConnectorType {
   if (ct === "IngestApi") return "IngestApi";
   if (ct === "AwsS3") return "AwsS3";
   if (ct === "SNOWFLAKE") return "SNOWFLAKE";
+  // BigQuery: accept the SDK-canonical TitleCase ("BigQuery") on the
+  // Connection construct and normalize to UPPERCASE here, matching how
+  // SNOWFLAKE is plumbed internally.
+  if (ct === "BigQuery" || ct === "BIGQUERY") return "BIGQUERY";
   throw new Error(
     `DataStream does not yet support connectorType "${ct}". ` +
-      `Supported: IngestApi, AwsS3, SNOWFLAKE.`,
+      `Supported: IngestApi, AwsS3, SNOWFLAKE, BigQuery.`,
   );
 }
 
@@ -530,7 +689,9 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
     const dloName = result.dataLakeObjectInfo?.name;
     const derivedName = dloName?.endsWith("__dll") ? dloName.slice(0, -"__dll".length) : undefined;
     const usesDerivedName =
-      props.connectorType === "AwsS3" || props.connectorType === "SNOWFLAKE";
+      props.connectorType === "AwsS3" ||
+      props.connectorType === "SNOWFLAKE" ||
+      props.connectorType === "BIGQUERY";
     const name = usesDerivedName && derivedName ? derivedName : result.name;
     if (!name) {
       throw new Error(
@@ -689,12 +850,15 @@ export class DataStream extends Construct {
     super(scope, id);
     this.devName = props.name ?? id;
     const category: DloCategory = props.category ?? "Other";
-    // Connector-specific refresh-mode default. Snowflake wants INCREMENTAL
-    // (or TOTAL_REPLACE); IngestApi / AwsS3 want UPSERT.
+    // Connector-specific refresh-mode default. Federated BYOL connectors
+    // (Snowflake, BigQuery) want INCREMENTAL (or TOTAL_REPLACE); IngestApi
+    // and AwsS3 want UPSERT.
     const connectorType = inferConnectorType(props.connection);
     const refreshMode =
       props.refreshMode ??
-      (connectorType === "SNOWFLAKE" ? "INCREMENTAL" : "UPSERT");
+      (connectorType === "SNOWFLAKE" || connectorType === "BIGQUERY"
+        ? "INCREMENTAL"
+        : "UPSERT");
     const dataSpace = props.dataSpace ?? "default";
     // Derive connector type from the parent Connection and validate s3 attrs.
     // Keeping this mapping in one place means the manifest author picks one
@@ -732,6 +896,27 @@ export class DataStream extends Construct {
           `Use refreshMode="TOTAL_REPLACE" for a full-table refresh.`,
       );
     }
+    if (connectorType === "BIGQUERY" && !props.bigquery) {
+      throw new Error(
+        `DataStream "${id}": BigQuery connections require bigquery attributes ` +
+          `({ project, dataset, table, incrementalColumn? }).`,
+      );
+    }
+    if (connectorType !== "BIGQUERY" && props.bigquery) {
+      throw new Error(
+        `DataStream "${id}": bigquery attributes are only meaningful for BigQuery connections.`,
+      );
+    }
+    if (
+      connectorType === "BIGQUERY" &&
+      refreshMode === "INCREMENTAL" &&
+      !props.bigquery?.incrementalColumn
+    ) {
+      throw new Error(
+        `DataStream "${id}": refreshMode=INCREMENTAL requires bigquery.incrementalColumn. ` +
+          `Use refreshMode="TOTAL_REPLACE" for a full-table refresh.`,
+      );
+    }
     if (category === "Engagement" && !props.eventDateTimeFieldName) {
       throw new Error(
         `DataStream "${id}": category="Engagement" requires eventDateTimeFieldName. ` +
@@ -759,6 +944,9 @@ export class DataStream extends Construct {
     }
     if (props.snowflake) {
       resolvedProps = { ...resolvedProps, snowflake: props.snowflake };
+    }
+    if (props.bigquery) {
+      resolvedProps = { ...resolvedProps, bigquery: props.bigquery };
     }
     this.props = resolvedProps;
     // Auto-wire dependency on the parent Connection (and ConnectionSchema if

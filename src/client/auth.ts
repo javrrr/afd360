@@ -77,16 +77,73 @@ export async function getSession(alias: string): Promise<Session> {
     );
   }
 
+  // Recent sf CLI versions (mid-2026 onward) redact the access token from
+  // `sf org display --json` output. The redacted value isn't a clean
+  // sentinel — it's a string that STARTS WITH "[REDACTED]" followed by
+  // additional human-readable instruction text (e.g.
+  // "[REDACTED] Use 'sf org auth show-access-token' to view"). The
+  // dedicated `sf org auth show-access-token --json` command returns
+  // the real token. Fall back to it when we see the redaction marker.
+  // The user can also bypass by setting SF_TEMP_SHOW_SECRETS=true, but
+  // that's a temporary CLI escape hatch and we shouldn't depend on it.
+  let accessToken = r.accessToken;
+  if (accessToken.startsWith("[REDACTED]")) {
+    accessToken = await fetchAccessTokenViaAuthCommand(alias);
+  }
+
   const session: Session = {
     alias,
     username: r.username,
     orgId: r.id,
     instanceUrl: r.instanceUrl,
     apiVersion: r.apiVersion,
-    accessToken: r.accessToken,
+    accessToken,
   };
   cache.set(alias, session);
   return session;
+}
+
+interface SfAuthShowTokenResult {
+  status: number;
+  result?: { accessToken?: string };
+  message?: string;
+}
+
+async function fetchAccessTokenViaAuthCommand(alias: string): Promise<string> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "sf",
+      ["org", "auth", "show-access-token", "--target-org", alias, "--json"],
+      { maxBuffer: 10 * 1024 * 1024 },
+    ));
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr ?? "";
+    throw new AuthError(
+      `sf CLI redacted the access token in 'sf org display'. Falling back to ` +
+        `'sf org auth show-access-token --target-org ${alias} --json' also failed. ` +
+        `Re-authenticate with: sf org login web --alias ${alias}\n${stderr}`,
+      err,
+    );
+  }
+
+  let parsed: SfAuthShowTokenResult;
+  try {
+    parsed = JSON.parse(stdout) as SfAuthShowTokenResult;
+  } catch (err) {
+    throw new AuthError(
+      `Could not parse 'sf org auth show-access-token' JSON for "${alias}".`,
+      err,
+    );
+  }
+
+  const token = parsed.result?.accessToken;
+  if (parsed.status !== 0 || !token) {
+    throw new AuthError(
+      `sf CLI 'sf org auth show-access-token' returned no token for "${alias}": ${parsed.message ?? "unknown"}`,
+    );
+  }
+  return token;
 }
 
 export function clearSessionCache(): void {

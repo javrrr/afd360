@@ -110,4 +110,65 @@ describe("getSession", () => {
     );
     await expect(getSession("partial")).rejects.toBeInstanceOf(AuthError);
   });
+
+  // Recent sf CLI versions (mid-2026 onward) redact the access token in
+  // `sf org display --json`, returning the literal string "[REDACTED]". afd360
+  // detects this and falls back to `sf org auth show-access-token --json`.
+  it("falls back to 'sf org auth show-access-token' when display redacts the token", async () => {
+    // 1st call: sf org display returns redacted token. The actual sf CLI
+    // value is the string "[REDACTED]" followed by human-readable
+    // instruction text — match the real shape.
+    respond(
+      JSON.stringify({
+        status: 0,
+        result: {
+          id: "00DWt00000KqAfsMAF",
+          apiVersion: "67.0",
+          accessToken:
+            "[REDACTED] Use 'sf org auth show-access-token' to view",
+          instanceUrl: "https://x.my.salesforce.com",
+          username: "u@example.com",
+          alias: "redacted-org",
+          connectedStatus: "Connected",
+        },
+      }),
+    );
+    // 2nd call: sf org auth show-access-token returns the real token.
+    respond(
+      JSON.stringify({
+        status: 0,
+        result: { accessToken: "00DWt00000KqAfs!RealToken_abc123" },
+      }),
+    );
+
+    const session = await getSession("redacted-org");
+    expect(session.accessToken).toBe("00DWt00000KqAfs!RealToken_abc123");
+    expect(session.orgId).toBe("00DWt00000KqAfsMAF");
+
+    // Verify the second exec call was the auth fallback with the right args.
+    expect(execFileImpl).toHaveBeenCalledTimes(2);
+    const secondCall = execFileImpl.mock.calls[1]!;
+    expect(secondCall[0]).toBe("sf");
+    expect(secondCall[1]).toEqual([
+      "org", "auth", "show-access-token", "--target-org", "redacted-org", "--json",
+    ]);
+  });
+
+  it("propagates AuthError if the show-access-token fallback also fails", async () => {
+    // 1st call: redacted (full real-CLI string shape).
+    respond(
+      JSON.stringify({
+        status: 0,
+        result: {
+          id: "00D", apiVersion: "67.0",
+          accessToken: "[REDACTED] Use 'sf org auth show-access-token' to view",
+          instanceUrl: "https://x", username: "u",
+        },
+      }),
+    );
+    // 2nd call: fallback fails (e.g. session expired).
+    respondError(Object.assign(new Error("exit 1"), { stderr: "auth failed" }));
+
+    await expect(getSession("dead-org")).rejects.toBeInstanceOf(AuthError);
+  });
 });
