@@ -128,8 +128,8 @@ export const RelationshipResource: Resource<
         sourceObject,
       );
       const rels =
-        (result as { relationships?: Array<{ name?: string }> }).relationships ??
-        [];
+        (result as { relationships?: Array<{ name?: string }> } | undefined)
+          ?.relationships ?? [];
       const match = rels.find((r) => r.name === devName);
       if (!match) return null;
       return toOutput(match as never, {
@@ -166,7 +166,7 @@ export const RelationshipResource: Resource<
             targetField?: { name?: string };
             targetObject?: { name?: string };
           }>;
-        }).relationships ?? [];
+        } | undefined)?.relationships ?? [];
       const match = rels.find(
         (r) =>
           r.sourceField?.name === props.sourceFieldName &&
@@ -262,10 +262,14 @@ export const RelationshipResource: Resource<
  * referenced by name (e.g. `"ssot__Account__dlm"`), afd360 can't know what
  * created them — the user must ensure those are mapped before deploy.
  *
- * afd360 does NOT auto-dependsOn the Mapping resources. The PLAN quirk says
- * both DMOs need ObjectSourceTargetMaps; within a single stack the Mapping
- * constructs typically depend on the DMOs, so a Relationship that depends on
- * the DMO transitively depends on its Mapping via the topo sort.
+ * afd360 auto-wires Mapping deps in BOTH directions: when a Relationship is
+ * constructed, it scans the stack for any Mapping whose `targetDmoName`
+ * matches its source or target DMO and adds it to dependsOn; when a Mapping
+ * is constructed, it scans the stack for any Relationship that touches its
+ * target DMO and adds itself to that Relationship's dependsOn (see
+ * `attachMappingToRelationships` below). Together this ensures the
+ * Connect API rule "both DMOs must be mapped before createRelationships"
+ * is always satisfied, regardless of construct declaration order.
  */
 export class Relationship extends Construct {
   readonly resource = RelationshipResource;
@@ -288,17 +292,63 @@ export class Relationship extends Construct {
     };
     const autoDeps: Construct[] = [props.source];
     if (typeof props.target !== "string") autoDeps.push(props.target);
+    // Also wire to any Mapping siblings already constructed whose target
+    // DMO matches this Relationship's source or target. The reciprocal hook
+    // in Mapping's constructor handles the Mapping-after-Relationship case;
+    // this loop handles Mapping-before-Relationship, so the relationship
+    // ordering in the manifest doesn't matter.
+    for (const sibling of scope.children) {
+      const r = (sibling as { resource?: { type?: unknown } }).resource;
+      if (!r || (r as { type?: string }).type !== "Mapping") continue;
+      const m = sibling as unknown as { props: { targetDmoName: string } };
+      if (m.props.targetDmoName === sourceName || m.props.targetDmoName === targetName) {
+        autoDeps.push(sibling);
+      }
+    }
     this.dependsOn = [...autoDeps, ...(props.dependsOn ?? [])];
   }
 
   /**
-   * Consumer-facing helper: pin a Mapping dependency explicitly. Use this
-   * when the target DMO is also afd360-managed and you want the Relationship
-   * to wait for its Mapping to be created (defensive; normally the DMO→
-   * Mapping edge plus Mapping→Relationship transitively handles this).
+   * Consumer-facing helper: pin a Mapping dependency explicitly. As of
+   * v0.2.0, afd360 auto-wires Mapping deps for in-stack DMOs, so most users
+   * never need this. Use it for cross-stack deps or for when the target is
+   * a standard `ssot__*` DMO referenced by name (afd360 can't see the
+   * Mapping that targets a string-named DMO).
    */
   addDependency(dep: Mapping | Construct): this {
     (this.dependsOn as Construct[]).push(dep);
     return this;
+  }
+}
+
+/**
+ * Internal API for the Mapping construct. When a Mapping is constructed,
+ * walk every existing Relationship sibling and add the Mapping as a dep on
+ * any Relationship whose source or target DMO matches the Mapping's target.
+ *
+ * Why this exists: the Connect API rejects `createRelationships` until both
+ * DMOs have at least one ObjectSourceTargetMap. afd360's auto-wired
+ * Relationship deps only point at the DMOs, not the Mappings, so a
+ * Relationship can topologically deploy in parallel with its Mappings.
+ *
+ * Mirrors the SearchIndex reciprocal-wiring pattern. See `Mapping`'s
+ * constructor for the call site.
+ */
+export function attachMappingToRelationships(
+  stack: { children: Construct[] },
+  mapping: Construct & { props: { targetDmoName: string } },
+): void {
+  for (const sibling of stack.children) {
+    const r = (sibling as { resource?: { type?: unknown } }).resource;
+    if (!r || (r as { type?: string }).type !== "Relationship") continue;
+    const rel = sibling as unknown as {
+      props: { sourceObjectName: string; targetObjectName: string };
+      dependsOn: Construct[];
+    };
+    const matchesSource = rel.props.sourceObjectName === mapping.props.targetDmoName;
+    const matchesTarget = rel.props.targetObjectName === mapping.props.targetDmoName;
+    if (!matchesSource && !matchesTarget) continue;
+    if (rel.dependsOn.includes(mapping)) continue;
+    (rel.dependsOn as Construct[]).push(mapping);
   }
 }
