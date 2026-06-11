@@ -7,6 +7,7 @@ import { pollUntil } from "../core/poll.js";
 import { DataStream } from "./data-stream.js";
 import { DMO } from "./dmo.js";
 import { attachMappingToSearchIndexes } from "./search-index.js";
+import { attachMappingToRelationships } from "./relationship.js";
 
 /**
  * A DLO-field → DMO-field pair. Platform uses `__c` suffix on both sides.
@@ -255,6 +256,15 @@ export class Mapping extends Construct {
     // own constructor scans for already-built Mappings; this scans for
     // already-built SearchIndexes.
     attachMappingToSearchIndexes(scope, this);
+    // Same reciprocal wiring for Relationships. The Connect API rejects
+    // a `createRelationships` call until both DMOs have at least one
+    // ObjectSourceTargetMap (i.e. mapping). Without this hook a Relationship
+    // construct that only auto-wires to the DMOs can deploy in parallel
+    // with the Mapping, and the platform errors out:
+    //   INVALID_INPUT: No ObjectSourceTargetMaps were found for the DMOs in
+    //   the relationships. Make sure that the DMOs are mapped.
+    // Probed against awt 2026-06-11.
+    attachMappingToRelationships(scope, this);
   }
 
   /**

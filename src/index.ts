@@ -1,6 +1,7 @@
 // Public SDK exports. Populated per milestone.
 
-export const VERSION = "0.1.0";
+declare const __PKG_VERSION__: string;
+export const VERSION: string = typeof __PKG_VERSION__ !== "undefined" ? __PKG_VERSION__ : "0.0.0";
 
 export { App, Stack } from "./core/app.js";
 export type { Plan, PlanResource, StackProps } from "./core/app.js";
@@ -22,6 +23,7 @@ export type {
   DataStreamConnectorType,
   AwsS3StreamAttributes,
   SnowflakeStreamAttributes,
+  BigQueryStreamAttributes,
   DloCategory,
 } from "./resources/data-stream.js";
 export { DMO } from "./resources/dmo.js";
