@@ -81,6 +81,14 @@ export const ConnectionSchemaResource: Resource<
       }],
     } as Parameters<Data360Client["connections"]["putSchema"]>[1];
     await retryOn5xx(() => ctx.client.connections.putSchema(props.connectionId, body));
+    // Validate the source after registering the schema. Without this, a
+    // dependent IngestApi DataStream create can fire before the schema is
+    // fully provisioned and fail with an opaque
+    // `INTERNAL_ERROR: Unable to create a data-stream`. testByPost is the
+    // handshake that flips the schema toward `Available` — the
+    // ConnectionSchema isReady poll then gates the DataStream correctly.
+    // Proven against the tdc provision() flow (KONE IDR pilot, 2026-06-25).
+    await retryOn5xx(() => ctx.client.connections.testByPost(props.connectionId));
     return { connectionId: props.connectionId, schemaName };
   },
 
