@@ -219,8 +219,9 @@ describe("ConnectionSchema resource", () => {
     // afd360 defaults label = name at the resource layer so user-authored
     // manifests can be terse.
     const putSchema = vi.fn().mockResolvedValue(undefined);
+    const testByPost = vi.fn().mockResolvedValue(undefined);
     const ctx = {
-      client: { connections: { putSchema } } as unknown as ResourceContext["client"],
+      client: { connections: { putSchema, testByPost } } as unknown as ResourceContext["client"],
       session: {
         alias: "awt", username: "u", orgId: "00D",
         instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
@@ -244,6 +245,9 @@ describe("ConnectionSchema resource", () => {
     const fields = body.schemas[0]!.fields;
     expect(fields[0]).toMatchObject({ name: "Id", label: "Id", dataType: "Text" });
     expect(fields[1]).toMatchObject({ name: "Body", label: "Body Text", dataType: "Text" });
+    // Schema is validated via testByPost after putSchema so a dependent
+    // IngestApi DataStream create doesn't race a not-yet-provisioned schema.
+    expect(testByPost).toHaveBeenCalledWith("1WMbm0000003f3RGAQ");
   });
 });
 
