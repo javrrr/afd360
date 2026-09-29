@@ -242,9 +242,22 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
       // binding teardown, OAuth token revocation, etc.) can briefly conflict
       // with the delete handler. Use a longer retry window than the baseline
       // 3 × 500ms — 6 × 5s gives the cleanup time to settle.
+      //
+      // We also retry on DEPENDENCY_EXISTS (a 4xx, not a 5xx, so is5xx alone
+      // misses it). During `destroy` the children (DataStream + its DLO) are
+      // deleted before the Connection, but the platform lags releasing the
+      // dependency edge for a few seconds after the DLO delete returns 204 —
+      // so a Connection delete issued immediately behind it sees a stale
+      // DEPENDENCY_EXISTS. It's the same propagation race the DELETE→CREATE
+      // DUPLICATES_DETECTED retry handles on create: transient, clears on
+      // retry. (If children genuinely failed to delete, destroy's orphan
+      // adoption pre-pass handles that earlier; a DEPENDENCY_EXISTS that
+      // survives all 6 attempts still surfaces so a real leak isn't masked.)
+      const isTransientDelete = (err: unknown): boolean =>
+        is5xx(err) || errBodyIncludes(err, "DEPENDENCY_EXISTS");
       await retryOn(
         () => ctx.client.connections.delete(salesforceId),
-        is5xx,
+        isTransientDelete,
         { attempts: 6, intervalMs: 5_000, backoff: 1, jitter: 0 },
       );
     } catch (err) {

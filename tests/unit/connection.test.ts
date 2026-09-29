@@ -177,6 +177,39 @@ describe("ConnectionResource.delete — transient 500 retry", () => {
       vi.useRealTimers();
     }
   });
+
+  it("retries on DEPENDENCY_EXISTS (child-teardown propagation race, a 4xx) and eventually succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      // The DLO delete returned 204 but the platform hadn't yet released the
+      // dependency edge, so the immediately-following Connection delete sees a
+      // stale DEPENDENCY_EXISTS. is5xx alone would miss this 4xx; the widened
+      // predicate retries it and the edge clears on the second attempt.
+      const del = vi
+        .fn<(...args: unknown[]) => Promise<unknown>>()
+        .mockRejectedValueOnce({
+          status: 400,
+          body: '[{"errorCode":"DEPENDENCY_EXISTS","message":"This connection has dependent objects."}]',
+        })
+        .mockResolvedValueOnce(undefined);
+      const ctx = {
+        client: {
+          connections: { delete: del },
+        } as unknown as ResourceContext["client"],
+        session: {
+          alias: "awt", username: "u", orgId: "00D",
+          instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+        },
+        orgAlias: "awt",
+      } as ResourceContext;
+      const promise = ConnectionResource.delete(ctx, "9cgbm000000Wj21AAC");
+      await vi.advanceTimersByTimeAsync(6_000);
+      await promise;
+      expect(del).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("ConnectionResource.delete — already-gone tolerance (D1)", () => {
