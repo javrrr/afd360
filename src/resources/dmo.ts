@@ -13,9 +13,15 @@ import { pollUntil } from "../core/poll.js";
  * on create (matches `DataModelObjectInputRepresentation`) but returns
  * UPPERCASE on read ("OTHER"). afd360 normalizes comparisons, not input.
  *
- * Sourced from the SDK so afd360 stays aligned with upstream regenerates.
- * Defined as a non-optional narrowing of the SDK's `category?` enum — afd360
- * always supplies a value (default "Other"), so the optionality drops out.
+ * Sourced from the SDK's `DataObjectInputRepresentation` so afd360 stays
+ * aligned with upstream regenerates. Defined as a non-optional narrowing of
+ * the SDK's `category?` enum — afd360 always supplies a value (default
+ * "Other"), so the optionality drops out.
+ *
+ * NOTE: as of SDK 0.6.x this stays title-case, but the sibling
+ * `DataModelObjectInputRepresentation` (the create-endpoint param) diverged to
+ * an UPPERCASE-only enum in 0.3.0. See the cast comment in `create` — afd360
+ * deliberately keeps title-case on the wire (live-API-accepted contract).
  */
 export type DmoCategory = NonNullable<DataObjectInputRepresentation["category"]>;
 
@@ -122,7 +128,15 @@ export const DmoResource: Resource<DmoResourceProps, DmoOutput> = {
         dataType: f.dataType,
         isPrimaryKey: f.isPrimaryKey ?? false,
       })),
-    } as Parameters<Data360Client["dataModelObjects"]["create"]>[0];
+      // NOTE: SDK ≥0.3.0 regenerated DataModelObjectInputRepresentation.category
+      // as an UPPERCASE-only enum ("OTHER" | "PROFILE" | ...), while afd360
+      // authors title-case ("Other" | "Profile") and the live Connect API
+      // accepts title-case on create (returns UPPERCASE on read). We keep
+      // sending the known-good title-case value and cast through `unknown` so
+      // the SDK's stricter input enum doesn't force a behavior change. Flip to
+      // UPPERCASE here + in DmoCategory only after verifying against a live org
+      // that title-case create is no longer accepted.
+    } as unknown as Parameters<Data360Client["dataModelObjects"]["create"]>[0];
     const result = await retryOn5xx(() => ctx.client.dataModelObjects.create(body));
     // Response lists the DMO with __dlm suffix; normalize for consistency.
     return toOutput({
