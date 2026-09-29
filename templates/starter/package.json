@@ -8,6 +8,6 @@
     "destroy": "afd360 destroy"
   },
   "dependencies": {
-    "afd360": "^0.1.0"
+    "afd360": "^0.3.0"
   }
 }
