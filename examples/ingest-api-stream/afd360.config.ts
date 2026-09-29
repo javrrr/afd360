@@ -16,6 +16,12 @@ const conn = new Connection(stack, "DocsIngest", {
   connectorType: "IngestApi",
   label: "Docs Ingest",
   schema: {
+    // `name` is the schema object's dev name. The DataStream below matches its
+    // `sourceObject` (the ingest event) against THIS name — not the label — so
+    // they must be equal. Omitting `name` defaults it to the construct id
+    // ("DocsIngestSchema"), which would NOT match sourceObject and fails with
+    // an opaque "400 INTERNAL_ERROR: Unable to create a data-stream".
+    name: "KnowledgeBase",
     label: "KnowledgeBase",
     fields: [
       { name: "Id", dataType: "Text" },
@@ -27,7 +33,7 @@ const conn = new Connection(stack, "DocsIngest", {
 
 new DataStream(stack, "DocsStream", {
   connection: conn,
-  sourceObject: "KnowledgeBase", // matches schema.label
+  sourceObject: "KnowledgeBase", // must equal the schema object name above
   label: "Docs Stream",
   category: "Other",
   refreshMode: "UPSERT",

@@ -159,7 +159,10 @@ export interface BigQueryStreamAttributes {
 export interface DataStreamProps {
   readonly connection: Connection;
   /** Logical name of the source object:
-   *  - IngestApi: schema object name (matches ConnectionSchema.schemaName).
+   *  - IngestApi: MUST equal the connection's schema object name
+   *    (ConnectionSchema.schemaName / schema.name — the dev name, not the
+   *    label). Enforced at construct time; a mismatch fails the platform create
+   *    with an opaque 400 INTERNAL_ERROR.
    *  - AwsS3: a stable identifier for the stream; used for the DLO name.
    *  - SNOWFLAKE: user-facing identifier; separate from `snowflake.object`
    *    (the Snowflake table name). Used to name the DLO.
@@ -874,6 +877,30 @@ export class DataStream extends Construct {
       throw new Error(
         `DataStream "${id}": s3 attributes are only meaningful for AwsS3 connections.`,
       );
+    }
+    // IngestApi: the stream's event (sourceObject) is matched by the platform
+    // against the schema object's dev NAME — not its label. The create payload
+    // sends `events: [sourceObject]` (buildIngestApiPayload) while the schema
+    // object is PUT with `name: schemaName` (ConnectionSchema). When these
+    // disagree the platform fails with an opaque
+    //   `400 INTERNAL_ERROR: Unable to create a data-stream`
+    // with no field-level detail. `schema.name` defaults to the ConnectionSchema
+    // construct id (`<connId>Schema`) when omitted, so authoring
+    // `sourceObject` to match `schema.label` (the intuitive pairing) silently
+    // mismatches. Catch it at synth with an actionable message instead.
+    if (connectorType === "IngestApi" && props.connection.schema) {
+      const schemaObjectName = props.connection.schema.schemaName;
+      if (props.sourceObject !== schemaObjectName) {
+        throw new Error(
+          `DataStream "${id}": sourceObject "${props.sourceObject}" must equal the ` +
+            `IngestApi schema object name "${schemaObjectName}". The platform matches ` +
+            `the stream event to the schema object by name (not label); a mismatch ` +
+            `fails with an opaque "400 INTERNAL_ERROR: Unable to create a data-stream". ` +
+            `Fix: set the connection's schema.name to "${props.sourceObject}", or set ` +
+            `sourceObject to "${schemaObjectName}". (schema.name defaults to the ` +
+            `ConnectionSchema construct id when omitted — it is NOT the schema label.)`,
+        );
+      }
     }
     if (connectorType === "SNOWFLAKE" && !props.snowflake) {
       throw new Error(

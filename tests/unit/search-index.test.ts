@@ -329,7 +329,7 @@ describe("SearchIndex auto-deps on Mapping siblings", () => {
     const conn = new Connection(stack, "Conn", {
       connectorType: "IngestApi",
       label: "Conn",
-      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+      schema: { name: "KB", label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
     });
     const stream = new DataStream(stack, "Stream", {
       connection: conn,
@@ -380,7 +380,7 @@ describe("SearchIndex auto-deps on Mapping siblings", () => {
     const conn = new Connection(stack, "Conn", {
       connectorType: "IngestApi",
       label: "Conn",
-      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+      schema: { name: "KB", label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
     });
     const stream = new DataStream(stack, "Stream", {
       connection: conn,

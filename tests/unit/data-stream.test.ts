@@ -14,7 +14,7 @@ function buildApp(): { app: App; stack: Stack; conn: Connection; stream: DataStr
   const conn = new Connection(stack, "Docs", {
     connectorType: "IngestApi",
     label: "Docs",
-    schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+    schema: { name: "KB", label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
   });
   const stream = new DataStream(stack, "DocsStream", {
     connection: conn,
@@ -86,6 +86,40 @@ describe("DataStream construct", () => {
     const resolved = stream.resolveProps(deployed);
     expect(resolved).not.toBeNull();
     expect(resolved!.connectionName).toBe(apiName);
+  });
+});
+
+describe("DataStream IngestApi schema-name validation", () => {
+  it("throws when sourceObject != the schema object name (defaulted from construct id)", () => {
+    const app = new App();
+    const stack = new Stack(app, "Ing", { targetOrg: "org" });
+    // schema.name omitted -> defaults to construct id "DocsSchema"; sourceObject
+    // "KnowledgeBase" (the label mental model) mismatches -> opaque 400 at deploy.
+    const conn = new Connection(stack, "Docs", {
+      connectorType: "IngestApi",
+      label: "Docs",
+      schema: { label: "KnowledgeBase", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    expect(() => new DataStream(stack, "Stream", {
+      connection: conn,
+      sourceObject: "KnowledgeBase",
+      primaryKey: { name: "Id" },
+    })).toThrow(/sourceObject "KnowledgeBase" must equal the IngestApi schema object name "DocsSchema"/);
+  });
+
+  it("accepts a matching sourceObject when schema.name is set", () => {
+    const app = new App();
+    const stack = new Stack(app, "Ing", { targetOrg: "org" });
+    const conn = new Connection(stack, "Docs", {
+      connectorType: "IngestApi",
+      label: "Docs",
+      schema: { name: "KnowledgeBase", label: "KnowledgeBase", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    expect(() => new DataStream(stack, "Stream", {
+      connection: conn,
+      sourceObject: "KnowledgeBase",
+      primaryKey: { name: "Id" },
+    })).not.toThrow();
   });
 });
 
@@ -282,7 +316,7 @@ describe("DataStream BigQuery path", () => {
     const conn = new Connection(stack, "IA", {
       connectorType: "IngestApi",
       label: "IA",
-      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+      schema: { name: "KB", label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
     });
     expect(() => new DataStream(stack, "X", {
       connection: conn,

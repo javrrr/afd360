@@ -11,7 +11,13 @@ import { retryOn5xx } from "../client/retry.js";
  * supply additional shape fields.
  */
 export interface ConnectionSchemaProps {
-  /** Schema object dev name — if omitted, the construct logical id is used. */
+  /**
+   * Schema object dev name. If omitted, the ConnectionSchema construct id
+   * (`<connectionId>Schema`) is used — NOT the label. An IngestApi DataStream's
+   * `sourceObject` must equal this name (the platform matches the ingest event
+   * to the schema object by name), so when a stream consumes this schema, set
+   * `name` to the stream's `sourceObject`.
+   */
   readonly name?: string;
   readonly label: string;
   readonly fields: ReadonlyArray<{

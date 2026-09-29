@@ -127,7 +127,7 @@ describe("computeOp", () => {
     const conn = new Connection(stack, "DocsIngest", {
       connectorType: "IngestApi",
       label: "Docs",
-      schema: { label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+      schema: { name: "KB", label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
     });
     const { DataStream } = await import("../../src/resources/data-stream.js");
     const stream = new DataStream(stack, "DocsStream", {

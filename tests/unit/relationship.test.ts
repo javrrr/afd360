@@ -192,16 +192,24 @@ describe("Relationship ↔ Mapping reciprocal auto-wiring (v0.2.0)", () => {
     const b = new DMO(stack, "B", {
       fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
     });
-    const conn = new Connection(stack, "Ing", {
+    // afd360 models one schema object per IngestApi connection, and a stream's
+    // sourceObject must equal that object's name — so two objects means two
+    // connections.
+    const connA = new Connection(stack, "IngA", {
       connectorType: "IngestApi",
-      label: "Ing",
-      schema: { label: "Ing", fields: [{ name: "Id", dataType: "Text" }] },
+      label: "IngA",
+      schema: { name: "A", label: "A", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    const connB = new Connection(stack, "IngB", {
+      connectorType: "IngestApi",
+      label: "IngB",
+      schema: { name: "B", label: "B", fields: [{ name: "Id", dataType: "Text" }] },
     });
     const aStream = new DataStream(stack, "AStream", {
-      connection: conn, sourceObject: "A", primaryKey: { name: "Id" },
+      connection: connA, sourceObject: "A", primaryKey: { name: "Id" },
     });
     const bStream = new DataStream(stack, "BStream", {
-      connection: conn, sourceObject: "B", primaryKey: { name: "Id" },
+      connection: connB, sourceObject: "B", primaryKey: { name: "Id" },
     });
     return { app, stack, a, b, aStream, bStream };
   }
@@ -290,7 +298,7 @@ describe("Relationship ↔ Mapping reciprocal auto-wiring (v0.2.0)", () => {
     });
     const conn = new Connection(stack, "Ing", {
       connectorType: "IngestApi", label: "Ing",
-      schema: { label: "Ing", fields: [{ name: "Id", dataType: "Text" }] },
+      schema: { name: "C", label: "Ing", fields: [{ name: "Id", dataType: "Text" }] },
     });
     const cStream = new DataStream(stack, "CStream", {
       connection: conn, sourceObject: "C", primaryKey: { name: "Id" },
