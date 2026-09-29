@@ -12,7 +12,7 @@
  * on the SearchIndex because those are the aporg KA_Knowledge defaults.
  */
 import { Command } from "commander";
-import { mkdir, readdir, copyFile, stat, access } from "node:fs/promises";
+import { mkdir, readdir, copyFile, stat, access, readFile, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,7 @@ export function registerInit(program: Command): void {
 
       const templateRoot = resolveTemplateRoot();
       await copyTree(templateRoot, target);
+      await stampAfd360Version(target, templateRoot);
 
       process.stdout.write(
         [
@@ -52,6 +53,28 @@ export function registerInit(program: Command): void {
         ].join("\n"),
       );
     });
+}
+
+/**
+ * Rewrite the afd360 dependency version in the scaffolded package.json to
+ * match the version of the CLI that ran init, so `npm install` always pulls
+ * the matching release rather than the placeholder pinned in the template.
+ */
+async function stampAfd360Version(target: string, templateRoot: string): Promise<void> {
+  // templateRoot is `<pkg-root>/templates/starter`, so the package root is
+  // two levels up (strip `starter`, then `templates`).
+  const pkgDir = dirname(dirname(templateRoot)); // .../pkg-root
+  const rootPkg = JSON.parse(await readFile(join(pkgDir, "package.json"), "utf8")) as { version?: string };
+  const version = rootPkg.version;
+  if (!version) return;
+
+  const scaffoldedPkg = join(target, "package.json");
+  const pkg = JSON.parse(await readFile(scaffoldedPkg, "utf8")) as Record<string, unknown>;
+  const deps = pkg["dependencies"] as Record<string, string> | undefined;
+  if (deps?.["afd360"]) {
+    deps["afd360"] = `^${version}`;
+    await writeFile(scaffoldedPkg, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+  }
 }
 
 /**
