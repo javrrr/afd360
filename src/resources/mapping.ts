@@ -26,7 +26,16 @@ export interface FieldMapping {
 
 export interface MappingProps {
   readonly source: DataStream;
-  readonly target: DMO;
+  /**
+   * Target DMO. Either an afd360-managed DMO construct or a standard
+   * platform DMO referenced by full dev name (e.g.
+   * `"ssot__Individual__dlm"`, `"ssot__ContactPointDigitalId__dlm"`).
+   * String form is for mapping a custom DLO into a standard SSOT DMO,
+   * which is required by Identity Resolution and the activation toolkit.
+   * When the target is a string, `dataSpace` defaults to `"default"`
+   * (the only place standard DMOs live).
+   */
+  readonly target: DMO | string;
   readonly fieldMappings: ReadonlyArray<FieldMapping>;
   /** Data space — must match the target DMO's. Defaults to "default". */
   readonly dataSpace?: string;
@@ -84,14 +93,21 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
   },
 
   async create(ctx, props): Promise<MappingOutput> {
+    // Resolve the ACTUAL DLO dev name. afd360 derives `${sourceObject}__dll`, which is right
+    // for S3/Snowflake but WRONG for IngestApi — Data Cloud names that DLO
+    // `PR_<stream>_<object>_<hash>__dll`. Using the derived name makes both the readiness
+    // poll and the mapping's sourceEntityDeveloperName reference a non-existent DLO.
+    const sourceDlo = await resolveDloName(ctx, props.sourceDloName);
+    const eff = sourceDlo === props.sourceDloName ? props : { ...props, sourceDloName: sourceDlo };
+
     // prior tooling lesson #4: after a stream creates, its DLO can take 5-60s before
     // it's queryable for mapping. createMappings without this wait yields
     // a 400 with a confusing "source object not found" / similar error.
     // Gate on dataLakeObjects.get() returning fields.
-    await waitForDloDiscoverable(ctx, props.sourceDloName);
+    await waitForDloDiscoverable(ctx, sourceDlo);
 
     const body = {
-      sourceEntityDeveloperName: props.sourceDloName,
+      sourceEntityDeveloperName: sourceDlo,
       targetEntityDeveloperName: props.targetDmoName,
       fieldMapping: props.fieldMappings.map((f) => ({
         sourceFieldDeveloperName: f.source,
@@ -102,13 +118,13 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
       const result = await retryOn5xx(() =>
         ctx.client.dataModelObjects.createMappings(body, { dataspace: props.dataSpace }),
       );
-      return toOutput(result as never, props);
+      return toOutput(result as never, eff);
     } catch (err) {
       // Quirk B4 — createMappings throws DUPLICATE_DLO_TO_DMO_MAPPING when a
       // mapping already exists with the same (dlo, dmo, dataSpace). Treat as
       // an idempotent success: look up the existing one and return it.
       if (errBodyIncludes(err, "DUPLICATE_DLO_TO_DMO_MAPPING")) {
-        const existing = await lookup(ctx, props.targetDmoName, props.sourceDloName, props.dataSpace);
+        const existing = await lookup(ctx, props.targetDmoName, sourceDlo, props.dataSpace);
         if (existing) return existing;
         // If we somehow can't find it after the duplicate error, surface the
         // original error — something genuinely strange is going on.
@@ -142,6 +158,40 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
     return hashProps({ ...props, fieldMappings: normalizedFields });
   },
 };
+
+/**
+ * Resolve the real DLO developer name for a stream's source object.
+ *
+ * afd360 derives `${sourceObject}__dll`, which is correct for S3/Snowflake streams. But an
+ * **IngestApi** stream's DLO is named `PR_<stream>_<object>_<hash>__dll` by the platform, so
+ * the derived name doesn't exist. Fast path: if the derived name resolves, use it. Fallback:
+ * list DLOs and match the one that ends in `__dll` and contains the object token.
+ */
+async function resolveDloName(ctx: ResourceContext, derivedName: string): Promise<string> {
+  try {
+    const raw = await ctx.client.dataLakeObjects.get(derivedName);
+    if (raw) return derivedName; // derived name exists (S3/Snowflake) — fast path
+  } catch {
+    /* not found → fall back to a listing lookup (IngestApi) */
+  }
+  const token = derivedName.replace(/__dll$/i, "");
+  try {
+    const list = await ctx.client.dataLakeObjects.list();
+    const items =
+      (list as { dataLakeObjects?: Array<{ name?: string; developerName?: string }> })
+        .dataLakeObjects ??
+      (list as { data?: Array<{ name?: string; developerName?: string }> }).data ??
+      [];
+    const match = items.find((d) => {
+      const n = d.name ?? d.developerName ?? "";
+      return /__dll$/i.test(n) && n.includes(token);
+    });
+    if (match) return match.name ?? match.developerName ?? derivedName;
+  } catch {
+    /* fall through — return the derived name and let the poll surface the problem */
+  }
+  return derivedName;
+}
 
 /**
  * Poll until `dataLakeObjects.get(name)` returns a DLO with at least one
@@ -236,17 +286,26 @@ export class Mapping extends Construct {
 
   constructor(scope: Stack, id: string, props: MappingProps, opts: MappingOpts = {}) {
     super(scope, id);
+    const targetIsString = typeof props.target === "string";
+    const targetDmoName = targetIsString
+      ? (props.target as string)
+      : (props.target as DMO).fullName;
+    const dataSpace = props.dataSpace ?? (
+      targetIsString ? "default" : (props.target as DMO).props.dataSpace
+    );
     this.props = {
       sourceDloName: props.source.dlo.name,
-      targetDmoName: props.target.fullName,
-      dataSpace: props.dataSpace ?? props.target.props.dataSpace,
+      targetDmoName,
+      dataSpace,
       fieldMappings: props.fieldMappings,
     };
-    // Auto-wire dependencies on both the source DataStream (so the DLO exists)
-    // and the target DMO (so its dataSpaceName has materialized per B2).
+    // Auto-wire dependencies on the source DataStream (so the DLO exists),
+    // and on the target DMO if it's an afd360-managed construct. For
+    // standard ssot__* DMOs (string target), the user is responsible for
+    // ensuring the DMO already exists — afd360 doesn't create it.
     this.dependsOn = [
       props.source,
-      props.target,
+      ...(targetIsString ? [] : [props.target as DMO]),
       ...(opts.dependsOn ?? []),
     ];
     // Reciprocal wiring: tell any SearchIndex sibling that targets the same
