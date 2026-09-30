@@ -94,6 +94,13 @@ Key facts to internalize:
 - **v1 policy on drift is delete-and-recreate.** PATCH isn't
   implemented for most resources. Don't generate manifests that
   intentionally drift fields hoping for in-place updates.
+- **afd360 only deletes what it created.** Deploy records provenance:
+  a resource afd360 `create`d is owned (torn down on `destroy`); one it
+  `adopt`ed (a pre-existing resource matched by natural key) or
+  `fromExisting`-references is not-owned — `destroy` skips it and it's
+  never recreated on drift. So adopting a platform-provisioned resource
+  (e.g. the `Account_Home` stream Data Cloud auto-creates) is safe: the
+  manifest tracks it without risking it on teardown.
 - **Secrets never appear in the manifest.** Use `${env.X}`,
   `${file:PATH}`, or `${pem:PATH}` substitution tokens. afd360 reads
   these at deploy time from the user's `.env`.
@@ -126,6 +133,7 @@ what you generate.
 | "I want to combine / join data from two DMOs" | (× 2) Connection → DataStream → DMO → Mapping, then Relationship |
 | "I want a metric / aggregation / count over data" | Connection → DataStream → DMO → Mapping → CalculatedInsight |
 | "I want to ingest data into Data Cloud" | Connection → DataStream (+ DMO + Mapping if user wants typed DMO surface) |
+| "I want to bring in my org's own CRM data (Account, custom objects, …)" | `Connection.salesforceHome` → DataStream (same-org CRM / Home; no creds) |
 | "I want to set up an X connection" (no further ask) | Connection only |
 | "I want to test that afd360 works" | Connection only (IngestApi is simplest — no external creds) |
 
@@ -215,6 +223,53 @@ The platform rewrites the connection name on create (authored
 "DocsIngest" becomes "Docs_Ingest_<uuid>"). afd360 handles this
 internally; you don't need to do anything special.
 
+### Same-org CRM (Home)
+
+Streams from **this org's own Salesforce objects** (standard or custom) into
+Data Cloud. No credentials — the connector is built into the org.
+
+```ts
+const home = Connection.salesforceHome(stack);   // references the built-in connector
+
+new DataStream(stack, "AccountHome", {
+  connection: home,
+  sourceObject: "Account",      // standard → Profile; custom "X__c" → Other
+  category: "Profile",
+  primaryKey: { name: "Id" },
+});
+```
+
+Key facts:
+
+- `Connection.salesforceHome(stack)` REFERENCES the built-in connector — it
+  adopts on deploy and **never deletes** it on destroy. Do NOT author it as a
+  normal `new Connection({ connectorType: "SalesforceDotCom" })` (that's the
+  unsupported external-OAuth path and will throw). For an org whose internal
+  names differ, use `Connection.fromExisting(stack, id, { name, connectorType,
+  dataSourceName })`.
+- **Declare only `sourceObject` + `primaryKey`.** The platform
+  auto-introspects the sObject and materializes every column — do not list
+  fields (unlike AwsS3/Snowflake).
+- **DLO name** = `<Object>_Home__dll`, trailing `__c` stripped from custom
+  objects (`P_Region__c` → `P_Region_Home__dll`). afd360 derives this; don't
+  author suffixes.
+- **DLO field names flatten** `__c` → `_c` (`ExternalId__c` → `ExternalId_c`).
+  A downstream `Mapping` must reference the flattened DLO field names.
+- **`recordModifiedFieldName`** defaults to `SystemModstamp`; override only if
+  an object uses a different audit field.
+- `category`: `Profile` for identity objects (Account/Contact/Lead), `Other`
+  otherwise (default). Confirmed live: standard + custom objects create
+  identically apart from `sourceObject`.
+- **Referencing a stream the platform already created.** Data Cloud
+  auto-provisions some Home streams (e.g. `Account_Home`). To use such a
+  stream's DLO as a `Mapping` source without afd360 owning or deleting it, use
+  `DataStream.fromExisting(stack, "AccountRef", { connection: home,
+  sourceObject: "Account" })` — it adopts on deploy, is skipped by `destroy`,
+  and its `.dlo.name` is a valid `Mapping.source`. (A plain `new DataStream`
+  that happens to hit a pre-existing stream is adopted not-owned automatically;
+  reach for `fromExisting` when you specifically want to reference-and-map one
+  the platform owns.)
+
 ## Env-var conventions
 
 | Token | When |
@@ -236,6 +291,8 @@ Connector-by-connector key conventions:
   `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_REGION`,
   `SNOWFLAKE_PRIVATE_KEY_PATH`.
 - **IngestApi**: no secrets needed.
+- **Same-org CRM (Home)**: no secrets needed — the connector is built into
+  the org (`Connection.salesforceHome`).
 
 ## What to ask the user
 
@@ -387,6 +444,7 @@ The `examples/` directory ships scenario manifests you can adapt:
 | `examples/snowflake-rag-full/` | User wants RAG / search index on Snowflake data. |
 | `examples/s3-rag-full/` | User wants RAG / search index on CSV data in S3. |
 | `examples/relationship-pair/` | User wants two related DMOs with a foreign key. |
+| `examples/salesforce-home-stream/` | User wants to stream this org's own CRM objects (standard/custom) into Data Cloud — no external creds. |
 
 Each subdir has its own `README.md` explaining the scenario, an
 `afd360.config.ts`, and a `.env.example`. Adapt the closest match to
