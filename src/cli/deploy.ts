@@ -18,6 +18,7 @@ import {
   summarizeOps,
   buildDependentsMap,
   computeBlastRadius,
+  computeRecreateDrainOrder,
   type Op,
   type OpKind,
 } from "./ops.js";
@@ -127,6 +128,45 @@ export function registerDeploy(program: Command): void {
       const ops: Op[] = [];
       let wrote = 0;
       try {
+        // Cascading-recreate delete drain (finding: recreate delete-ordering
+        // 412). A recreate is delete-then-create, and the platform blocks
+        // deleting a resource a live dependent still references (412
+        // MATCH_PRECONDITION_FAILED — e.g. a DMO under a CalculatedInsight /
+        // SearchIndex / semantic model). The forward loop below deletes each
+        // recreate root before it reaches the root's dependents, so we must
+        // first delete those live dependents in reverse-topological order
+        // (children first), exactly as `destroy` does. Each drained dependent
+        // loses its state id + deployed entry, so the forward loop then
+        // recreates it cleanly (computeOp sees no id + live gone → create).
+        // Inside the try/finally so a mid-drain failure still persists the
+        // deletes we did complete.
+        const isDeletable = (uid: string): boolean => {
+          const entry = state.resources[uid];
+          if (!entry?.salesforceId) return false; // nothing live to delete
+          const c = byId.get(uid);
+          if (!c) return false;
+          // Ownership gate — never delete a referenced (fromExisting) or merely
+          // adopted (owned:false) resource, mirroring destroy's guards.
+          if ((c as { isExisting?: boolean }).isExisting) return false;
+          if (entry.owned === false) return false;
+          return true;
+        };
+        const drainOrder = computeRecreateDrainOrder(
+          cascades,
+          [...order].reverse(),
+          isDeletable,
+        );
+        for (const uid of drainOrder) {
+          const c = byId.get(uid)!;
+          const entry = state.resources[uid]!;
+          process.stdout.write(
+            `  ${pc.red("drain")}    ${uid} (recreate cascade — delete before parent)\n`,
+          );
+          await c.resource.delete(ctx, entry.salesforceId!);
+          delete state.resources[uid];
+          deployed.delete(uid);
+        }
+
         for (const uid of order) {
           const c = byId.get(uid)!;
           const op = await computeOp(ctx, c, state, deployed, { strictEnv: true });

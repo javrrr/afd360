@@ -213,6 +213,42 @@ export function computeBlastRadius(
 }
 
 /**
+ * Delete-drain ordering for cascading recreates.
+ *
+ * v1 policy recreates on drift (delete + create). The platform refuses to
+ * delete a resource while a dependent still references it — deleting a DMO that
+ * a CalculatedInsight / SearchIndex / Relationship / SemanticModel points at
+ * 412s with MATCH_PRECONDITION_FAILED ("resource referenced in other
+ * features"). The forward deploy loop walks parents → children, so it would
+ * delete the recreate root (the DMO) *before* it reaches those dependents,
+ * hitting the 412 — the same failure `destroy` avoids by deleting in reverse.
+ *
+ * Fix: before the forward loop runs, delete every live dependent of a recreate
+ * in REVERSE-topological order (children first) — the same order `destroy`
+ * uses. Each drained dependent loses its state id, so the forward loop then
+ * recreates it cleanly (its parent was torn down and rebuilt, so the dependent
+ * must be too — the platform cascades it away when the parent is deleted).
+ *
+ * The recreate ROOTS themselves are NOT drained here — the forward loop's
+ * `recreate` branch deletes-and-creates each root once its dependents are gone.
+ *
+ * Returns the dependent uniqueIds to delete, ordered children-first, filtered
+ * to those actually deletable (`isDeletable` — live + owned; never a
+ * referenced/adopted resource, matching the ownership gate destroy honors).
+ */
+export function computeRecreateDrainOrder(
+  cascades: ReadonlyMap<string, readonly string[]>,
+  reverseOrder: readonly string[],
+  isDeletable: (uniqueId: string) => boolean,
+): string[] {
+  const drain = new Set<string>();
+  for (const dependents of cascades.values()) {
+    for (const uid of dependents) drain.add(uid);
+  }
+  return reverseOrder.filter((uid) => drain.has(uid) && isDeletable(uid));
+}
+
+/**
  * Build a dependents map (parent → child[]) from dependsOn edges (child → parent[]).
  * Separate function so it can be reused by diff, deploy, and tests.
  */

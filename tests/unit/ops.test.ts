@@ -4,6 +4,7 @@ import { Connection } from "../../src/resources/connection.js";
 import {
   computeOp,
   computeBlastRadius,
+  computeRecreateDrainOrder,
   buildDependentsMap,
   type Op,
 } from "../../src/cli/ops.js";
@@ -289,6 +290,72 @@ describe("computeBlastRadius", () => {
     const ops = [mkOp("Solo", "recreate")];
     const radius = computeBlastRadius(ops, new Map());
     expect(radius.size).toBe(0);
+  });
+});
+
+describe("computeRecreateDrainOrder (recreate delete-ordering)", () => {
+  // A recreate is delete-then-create. The platform 412s when deleting a
+  // resource a live dependent still references, so dependents of a recreate
+  // must be deleted BEFORE the recreate root — in reverse-topological order,
+  // exactly as destroy tears down. This helper computes that drain list.
+  const allDeletable = () => true;
+
+  it("returns dependents of a recreate, children-first (reverse-topo)", () => {
+    // Forward order: Conn → DMO → Mapping → CI. DMO recreates; its transitive
+    // dependents (Mapping, CI) must drain first, deepest-first.
+    const forwardOrder = ["Conn", "DMO", "Mapping", "CI"];
+    const cascades = new Map([["DMO", ["Mapping", "CI"]]]);
+    const drain = computeRecreateDrainOrder(
+      cascades,
+      [...forwardOrder].reverse(),
+      allDeletable,
+    );
+    // reverse of forward = [CI, Mapping, DMO, Conn]; filtered to the drain set.
+    expect(drain).toEqual(["CI", "Mapping"]);
+  });
+
+  it("excludes the recreate root itself (forward loop handles it)", () => {
+    const cascades = new Map([["DMO", ["CI"]]]);
+    const drain = computeRecreateDrainOrder(cascades, ["CI", "DMO", "Conn"], allDeletable);
+    expect(drain).not.toContain("DMO");
+    expect(drain).toEqual(["CI"]);
+  });
+
+  it("unions dependents across multiple recreate roots without duplicates", () => {
+    // Two recreate roots sharing a common downstream dependent (Viz).
+    const cascades = new Map([
+      ["ModelA", ["Viz"]],
+      ["ModelB", ["Viz"]],
+    ]);
+    const drain = computeRecreateDrainOrder(cascades, ["Viz", "ModelA", "ModelB"], allDeletable);
+    expect(drain).toEqual(["Viz"]);
+  });
+
+  it("filters out non-deletable resources (referenced / adopted / not live)", () => {
+    const cascades = new Map([["DMO", ["CI", "AdoptedThing", "RefThing"]]]);
+    const isDeletable = (uid: string): boolean => uid === "CI";
+    const drain = computeRecreateDrainOrder(
+      cascades,
+      ["RefThing", "AdoptedThing", "CI", "DMO"],
+      isDeletable,
+    );
+    expect(drain).toEqual(["CI"]);
+  });
+
+  it("returns empty when there are no cascades", () => {
+    expect(computeRecreateDrainOrder(new Map(), ["A", "B"], allDeletable)).toEqual([]);
+  });
+
+  it("orders a transitive grandchild before its parent", () => {
+    // Forward: DMO → CI → Model → Viz. DMO recreates; drain deepest-first.
+    const forwardOrder = ["DMO", "CI", "Model", "Viz"];
+    const cascades = new Map([["DMO", ["CI", "Model", "Viz"]]]);
+    const drain = computeRecreateDrainOrder(
+      cascades,
+      [...forwardOrder].reverse(),
+      allDeletable,
+    );
+    expect(drain).toEqual(["Viz", "Model", "CI"]);
   });
 });
 
