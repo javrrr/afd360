@@ -33,10 +33,12 @@ function mockCtx(): ResourceContext {
         listMappings: vi.fn(),
       },
       // DLO get is stubbed to return a ready DLO immediately so the
-      // discoverability poll in Mapping.create doesn't block unit tests.
-      // Real S3 / IngestApi runs wait for fields to materialize.
+      // discoverability poll AND the source-field pre-validation in
+      // Mapping.create don't block unit tests. Fields cover the sources the
+      // create tests map (Id, a__c). Real S3 / IngestApi runs wait for fields
+      // to materialize. Validation tests below override this per-case.
       dataLakeObjects: {
-        get: vi.fn().mockResolvedValue({ fields: [{ name: "Id" }] }),
+        get: vi.fn().mockResolvedValue({ fields: [{ name: "Id" }, { name: "a__c" }] }),
       },
     } as unknown as ResourceContext["client"],
     session: {
@@ -193,6 +195,86 @@ describe("MappingResource.create (quirk B4 — DUPLICATE_DLO_TO_DMO_MAPPING)", (
     await expect(MappingResource.create(ctx, props)).rejects.toThrow(
       /primary key must be included in fieldMappings/,
     );
+  });
+});
+
+describe("MappingResource.create (source-field pre-validation)", () => {
+  const props = {
+    sourceDloName: "X__dll",
+    targetDmoName: "Y__dlm",
+    dataSpace: "default",
+    fieldMappings: [
+      { source: "Id__c", target: "Id__c" },
+      { source: "Region_c__c", target: "Region__c" },
+    ],
+  };
+
+  it("throws an actionable error naming the missing source field", async () => {
+    const ctx = mockCtx();
+    // Live DLO has Id__c but the source column is actually Territory_c__c, not
+    // the derived Region_c__c (stale DLO / renamed source field).
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fields: [{ developerName: "Id__c" }, { developerName: "Territory_c__c" }],
+    });
+    await expect(MappingResource.create(ctx, props)).rejects.toThrow(/"Region_c__c"/);
+    await expect(MappingResource.create(ctx, props)).rejects.toThrow(
+      /SourceField must not be null/,
+    );
+    // The create must not be attempted when validation fails.
+    expect(ctx.client.dataModelObjects.createMappings).not.toHaveBeenCalled();
+  });
+
+  it("lists the available DLO fields to guide the fix", async () => {
+    const ctx = mockCtx();
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fields: [{ developerName: "Id__c" }, { developerName: "Territory_c__c" }],
+    });
+    await expect(MappingResource.create(ctx, props)).rejects.toThrow(
+      /Available DLO fields: Id__c, Territory_c__c/,
+    );
+  });
+
+  it("passes validation and creates when all sources exist", async () => {
+    const ctx = mockCtx();
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      // Verbose shape (dataLakeFieldInfoRepresentation) + developerName key.
+      dataLakeObjects: [
+        {
+          dataLakeFieldInfoRepresentation: [
+            { developerName: "Id__c" },
+            { developerName: "Region_c__c" },
+          ],
+        },
+      ],
+    });
+    (ctx.client.dataModelObjects.createMappings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      developerName: "X_map_Y",
+      sourceEntityDeveloperName: "X__dll",
+      targetEntityDeveloperName: "Y__dlm",
+    });
+    const out = await MappingResource.create(ctx, props);
+    expect(out.developerName).toBe("X_map_Y");
+    expect(ctx.client.dataModelObjects.createMappings).toHaveBeenCalledOnce();
+  });
+
+  it("skips validation (defers to the platform) when the DLO field set can't be read", async () => {
+    const ctx = mockCtx();
+    // No fields available — an unexpected shape. Don't falsely block; let the
+    // create proceed and the platform be the source of truth.
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (ctx.client.dataModelObjects.createMappings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      developerName: "X_map_Y",
+      sourceEntityDeveloperName: "X__dll",
+      targetEntityDeveloperName: "Y__dlm",
+    });
+    // waitForDloDiscoverable would spin on an empty DLO, so give it fields on
+    // the first poll but an empty set for name extraction is what we test —
+    // simulate by returning fields with no recognizable name keys.
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fields: [{ someUnknownKey: "x" }],
+    });
+    const out = await MappingResource.create(ctx, props);
+    expect(out.developerName).toBe("X_map_Y");
   });
 });
 

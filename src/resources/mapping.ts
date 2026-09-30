@@ -107,6 +107,15 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
     // Gate on dataLakeObjects.get() returning fields.
     await waitForDloDiscoverable(ctx, sourceDlo);
 
+    // Pre-validate the fieldMappings source names against the live DLO's
+    // actual field set. `Mapping.homeFields` DERIVES the DLO source column
+    // from the sObject field via the flatten rule (`Foo__c` → `Foo_c__c`); if
+    // the live DLO's real column diverges (e.g. a stale DLO provisioned before
+    // a source-field rename), the derived source doesn't exist and
+    // createMappings 400s with an opaque "SourceField must not be null" that
+    // names no field. Surface the offending name(s) + the available set here.
+    await validateSourceFields(ctx, sourceDlo, props.fieldMappings);
+
     const body = {
       sourceEntityDeveloperName: sourceDlo,
       targetEntityDeveloperName: props.targetDmoName,
@@ -230,23 +239,89 @@ async function waitForDloDiscoverable(
     async () => {
       try {
         const raw = await ctx.client.dataLakeObjects.get(dloName);
-        // The SDK sometimes wraps the response in { dataLakeObjects: [...] }
-        // (prior tooling-observed behavior); handle both shapes defensively.
-        const dlo =
-          (raw as { dataLakeObjects?: Array<unknown> }).dataLakeObjects?.[0] ??
-          raw;
-        const fields =
-          (dlo as { fields?: unknown[]; dataLakeFieldInfoRepresentation?: unknown[] })
-            .fields ??
-          (dlo as { dataLakeFieldInfoRepresentation?: unknown[] })
-            .dataLakeFieldInfoRepresentation ??
-          [];
-        return fields.length > 0 ? true : null;
+        return extractDloFieldArray(raw).length > 0 ? true : null;
       } catch {
         return null;
       }
     },
     { intervalMs: opts.intervalMs ?? 5_000, timeoutMs: opts.timeoutMs ?? 180_000 },
+  );
+}
+
+/**
+ * Extract the field array from a `dataLakeObjects.get` response. The SDK
+ * sometimes wraps the response in `{ dataLakeObjects: [...] }` (prior tooling-observed),
+ * and the field array is under either `fields` or the verbose
+ * `dataLakeFieldInfoRepresentation`. Handle all shapes defensively.
+ */
+function extractDloFieldArray(raw: unknown): unknown[] {
+  const dlo =
+    (raw as { dataLakeObjects?: Array<unknown> }).dataLakeObjects?.[0] ?? raw;
+  return (
+    (dlo as { fields?: unknown[]; dataLakeFieldInfoRepresentation?: unknown[] }).fields ??
+    (dlo as { dataLakeFieldInfoRepresentation?: unknown[] }).dataLakeFieldInfoRepresentation ??
+    []
+  );
+}
+
+/**
+ * The set of a DLO's live field dev-names. The field dev-name lives under
+ * `name` — live-verified on a live org (a live org, 2026-10-01): each
+ * `dataLakeFieldInfoRepresentation` entry is
+ * `{ dataType, isPrimaryKey, label, name }`, e.g. `name: "BillingState__c"`,
+ * and it already carries the double-c flatten for custom fields
+ * (`Foo__c` → `Foo_c__c`) — so validating `Mapping.homeFields` output against
+ * these raw names is exactly right. `developerName`/`fieldName` are kept as
+ * defensive fallbacks for other response shapes; SF never repurposes them for
+ * a display label (that's `label`, which we deliberately don't read). Returns
+ * an empty set on any failure so callers can decline to validate rather than
+ * block a valid create.
+ */
+async function getDloFieldNames(ctx: ResourceContext, dloName: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  try {
+    const raw = await ctx.client.dataLakeObjects.get(dloName);
+    for (const f of extractDloFieldArray(raw)) {
+      const rec = f as Record<string, unknown>;
+      for (const key of ["name", "developerName", "fieldName"] as const) {
+        const v = rec[key];
+        if (typeof v === "string" && v.length > 0) names.add(v);
+      }
+    }
+  } catch {
+    /* return whatever we gathered (possibly empty) — see callers */
+  }
+  return names;
+}
+
+/**
+ * Pre-validate `fieldMappings` source names against the live DLO field set.
+ * Throws an actionable error naming the offending source(s) — the platform
+ * otherwise reports a bad source only as an opaque 400 "SourceField must not
+ * be null" with no field name. Skips silently when the DLO field set can't be
+ * read (empty), so an unexpected response shape degrades to the status-quo
+ * platform error rather than falsely blocking a valid create.
+ */
+async function validateSourceFields(
+  ctx: ResourceContext,
+  dloName: string,
+  fieldMappings: ReadonlyArray<FieldMapping>,
+): Promise<void> {
+  const available = await getDloFieldNames(ctx, dloName);
+  if (available.size === 0) return; // can't validate safely — defer to platform
+  const missing = fieldMappings.map((f) => f.source).filter((src) => !available.has(src));
+  if (missing.length === 0) return;
+  const plural = missing.length === 1 ? "" : "s";
+  const avail = [...available].sort().join(", ");
+  throw new Error(
+    `Mapping create for DLO "${dloName}" would fail: source field${plural} ` +
+      `${missing.map((m) => `"${m}"`).join(", ")} ${missing.length === 1 ? "does" : "do"} not ` +
+      `exist on the DLO. (The platform reports this only as an opaque 400 ` +
+      `"SourceField must not be null".) Available DLO fields: ${avail}. ` +
+      `For a same-org CRM (Home) source, Mapping.homeFields derives source names ` +
+      `from the sObject field names — if the live DLO column diverges (e.g. a ` +
+      `renamed source field), pass explicit fieldMappings with the actual DLO ` +
+      `column name (e.g. { source: "Region_c__c", target: "Region__c" }).`,
   );
 }
 
