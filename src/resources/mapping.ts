@@ -8,6 +8,7 @@ import { DataStream } from "./data-stream.js";
 import { DMO } from "./dmo.js";
 import { attachMappingToSearchIndexes } from "./search-index.js";
 import { attachMappingToRelationships } from "./relationship.js";
+import { attachMappingToCalculatedInsights } from "./calculated-insight.js";
 
 /**
  * A DLO-field → DMO-field pair. Platform uses `__c` suffix on both sides.
@@ -340,6 +341,13 @@ export class Mapping extends Construct {
     //   the relationships. Make sure that the DMOs are mapped.
     // Probed against awt 2026-06-11.
     attachMappingToRelationships(scope, this);
+    // Same reciprocal wiring for CalculatedInsights. A CI validates against
+    // the DMO's fact table, which only materializes after this Mapping runs.
+    // Any CI that references this Mapping's target DMO (via its dependsOn)
+    // must therefore deploy after this Mapping. Without it a fresh deploy can
+    // run the CI before any mapping exists → 500 ENTITY_SAVE_ERROR
+    // "Error getting FactTable …__dlm" and the whole deploy aborts.
+    attachMappingToCalculatedInsights(scope, this);
   }
 
   /**
