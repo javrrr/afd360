@@ -253,8 +253,21 @@ Key facts:
 - **DLO name** = `<Object>_Home__dll`, trailing `__c` stripped from custom
   objects (`P_Region__c` → `P_Region_Home__dll`). afd360 derives this; don't
   author suffixes.
-- **DLO field names flatten** `__c` → `_c` (`ExternalId__c` → `ExternalId_c`).
-  A downstream `Mapping` must reference the flattened DLO field names.
+- **DLO field dev names** (what a `Mapping.source` references) follow a rule
+  the platform applies, live-verified on a live org:
+    - **standard** sObject field `Name` → DLO field `Name__c` (single `__c`).
+    - **custom** sObject field `Foo__c` → DLO field `Foo_c__c` — the field's
+      own `__c` flattens to `_c`, then the DLO re-appends `__c` (double-c).
+  The DMO target field is authored as the base name (`Foo`) and lands on
+  `Foo__c`. **Use `Mapping.homeFields(["Id", "Name", "Foo__c"])`** to build
+  these mappings — it applies the rule (unlike `Mapping.oneToOne`, which is
+  right only for IngestApi/S3/Snowflake where source and target names match).
+  The DLO **primary key** (`Id`) MUST be in the field list or the platform
+  400s on mapping create; afd360 rewrites that opaque `MISSING_ARGUMENT` into
+  an actionable message. `Currency`/`Percent` are valid `DmoField.dataType`
+  values and must match the DLO field's type exactly (no coercion). The
+  platform also auto-adds `KQ_Id__c`, `DataSource__c`, `DataSourceObject__c`,
+  `cdp_sys_record_currency__c` to the live mapping — you don't author these.
 - **`recordModifiedFieldName`** defaults to `SystemModstamp`; override only if
   an object uses a different audit field.
 - `category`: `Profile` for identity objects (Account/Contact/Lead), `Other`

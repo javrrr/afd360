@@ -129,6 +129,22 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
         // If we somehow can't find it after the duplicate error, surface the
         // original error — something genuinely strange is going on.
       }
+      // The platform requires the DLO's primary key in the fieldMapping set,
+      // but reports its absence with an opaque MISSING_ARGUMENT ("Unable to
+      // find Primary Key of DLO in POST request of Mapping Creation"). Rethrow
+      // with an actionable message — the fix is almost always adding the PK
+      // pair (e.g. `{ source: "Id__c", target: "Id__c" }`) to `fieldMappings`.
+      if (errBodyIncludes(err, "Unable to find Primary Key of DLO")) {
+        const detail =
+          (err as { message?: string }).message ??
+          JSON.stringify((err as { body?: unknown }).body ?? err);
+        throw new Error(
+          `Mapping create for DLO "${sourceDlo}" → DMO "${props.targetDmoName}" failed: ` +
+            `the DLO's primary key must be included in fieldMappings. Add the PK pair ` +
+            `(e.g. { source: "Id__c", target: "Id__c" }) — for a same-org CRM (Home) ` +
+            `stream the PK field is "Id". Original error: ${detail}`,
+        );
+      }
       throw err;
     }
   },
@@ -328,13 +344,55 @@ export class Mapping extends Construct {
 
   /**
    * Helper: build field mappings where source and target share the same name
-   * (with __c suffix on source). Handy when DLO and DMO fields are aligned.
+   * (with __c suffix on source). Handy when DLO and DMO fields are aligned —
+   * the IngestApi / AwsS3 / Snowflake case, where a DLO field authored as
+   * `Title` materializes as `Title__c` on both the DLO and a DMO field of the
+   * same authored name.
+   *
+   * WRONG for same-org CRM (Home) DLO sources — those flatten custom fields
+   * differently (`Foo__c` → `Foo_c__c` on the DLO but `Foo__c` on the DMO).
+   * Use {@link Mapping.homeFields} for Home streams.
    */
   static oneToOne(names: readonly string[]): FieldMapping[] {
     return names.map((n) => {
       const src = n.endsWith("__c") ? n : `${n}__c`;
       const tgt = n.endsWith("__c") ? n : `${n}__c`;
       return { source: src, target: tgt };
+    });
+  }
+
+  /**
+   * Helper: build field mappings for a **same-org CRM (Home) DLO source**,
+   * applying the platform's Home DLO field dev-name rule (live-verified,
+   * a live org). Pass the sObject field names; standard fields bare
+   * (`Name`, `Id`, `OpportunityId`), custom fields with their `__c`
+   * (`CompetitorName__c`):
+   *
+   *   - **standard** `Name`   → source `Name__c`,        target `Name__c`
+   *   - **custom**   `Foo__c` → source `Foo_c__c` (the sObject `__c` flattens
+   *                             to `_c`, then the DLO re-appends `__c`),
+   *                             target `Foo__c` (the DMO field is authored as
+   *                             the base name `Foo`, so it lands on `Foo__c`)
+   *
+   * A single mapping may mix both forms. The Home DLO's primary key
+   * (`Id`) MUST be among `names` — the platform 400s on create without it.
+   *
+   * If your DMO field names diverge from the sObject base names, build the
+   * `FieldMapping[]` by hand instead — this helper assumes DMO field = base.
+   */
+  static homeFields(names: readonly string[]): FieldMapping[] {
+    return names.map((n) => {
+      if (n.endsWith("__c")) {
+        // Custom sObject field. Base = name minus the trailing `__c`.
+        const base = n.slice(0, -"__c".length);
+        // DLO flattens `__c` → `_c`, then appends `__c`: `Foo` → `Foo_c__c`.
+        const source = `${base}_c__c`;
+        // DMO field is authored as the base name → `Foo__c`.
+        const target = `${base}__c`;
+        return { source, target };
+      }
+      // Standard sObject field: single `__c` on both sides.
+      return { source: `${n}__c`, target: `${n}__c` };
     });
   }
 }

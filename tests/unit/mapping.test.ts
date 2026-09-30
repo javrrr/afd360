@@ -87,6 +87,40 @@ describe("Mapping construct", () => {
   });
 });
 
+describe("Mapping.homeFields (same-org CRM Home DLO field-name rule)", () => {
+  it("standard fields get a single __c on both sides", () => {
+    expect(Mapping.homeFields(["Id", "Name", "OpportunityId"])).toEqual([
+      { source: "Id__c", target: "Id__c" },
+      { source: "Name__c", target: "Name__c" },
+      { source: "OpportunityId__c", target: "OpportunityId__c" },
+    ]);
+  });
+
+  it("custom fields flatten __c → _c on the DLO source (double-c), single __c on the DMO target", () => {
+    expect(Mapping.homeFields(["CompetitorName__c", "PricePerMW__c"])).toEqual([
+      { source: "CompetitorName_c__c", target: "CompetitorName__c" },
+      { source: "PricePerMW_c__c", target: "PricePerMW__c" },
+    ]);
+  });
+
+  it("mixes standard and custom fields in one call", () => {
+    expect(Mapping.homeFields(["Id", "OpportunityId", "WalletSharePct__c"])).toEqual([
+      { source: "Id__c", target: "Id__c" },
+      { source: "OpportunityId__c", target: "OpportunityId__c" },
+      { source: "WalletSharePct_c__c", target: "WalletSharePct__c" },
+    ]);
+  });
+
+  it("differs from oneToOne for custom fields (the bug it fixes)", () => {
+    // oneToOne would wrongly emit source === target === "Foo__c"; homeFields
+    // corrects the source to the platform's flattened double-c dev name.
+    expect(Mapping.oneToOne(["Foo__c"])).toEqual([{ source: "Foo__c", target: "Foo__c" }]);
+    expect(Mapping.homeFields(["Foo__c"])).toEqual([
+      { source: "Foo_c__c", target: "Foo__c" },
+    ]);
+  });
+});
+
 describe("MappingResource.hash", () => {
   it("stable across fieldMappings reordering", () => {
     const a = MappingResource.hash({
@@ -145,6 +179,20 @@ describe("MappingResource.create (quirk B4 — DUPLICATE_DLO_TO_DMO_MAPPING)", (
       body: { errorCode: "SOMETHING_ELSE" },
     });
     await expect(MappingResource.create(ctx, props)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("rewrites the opaque MISSING_ARGUMENT PK error into an actionable message", async () => {
+    const ctx = mockCtx();
+    (ctx.client.dataModelObjects.createMappings as ReturnType<typeof vi.fn>).mockRejectedValue({
+      status: 400,
+      body: {
+        errorCode: "MISSING_ARGUMENT",
+        message: "Unable to find Primary Key of DLO in POST request of Mapping Creation",
+      },
+    });
+    await expect(MappingResource.create(ctx, props)).rejects.toThrow(
+      /primary key must be included in fieldMappings/,
+    );
   });
 });
 
