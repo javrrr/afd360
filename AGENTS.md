@@ -268,9 +268,16 @@ Key facts:
   values and must match the DLO field's type exactly (no coercion) — **but** a
   `Currency`-typed field breaks Tableau Next semantic-model creation on a
   single-currency org (its `cdp_sys_record_currency__c` is present but empty),
-  and there is no CI-SQL escape (`CAST` unsupported, `ROUND` keeps the type). If
-  a semantic layer is in play over this DMO, model amounts as `Number` + a Text
-  currency-code sibling (the shape standard DMOs use) instead of `Currency`. The
+  and there is no escape downstream of the source: the CI type engine is
+  absorbing (any expression touching a Currency field stays Currency — `* 1.0`,
+  `SUM/COUNT`, etc. all fail to demote; `CAST` is unsupported, `ROUND` keeps the
+  type), so a Currency source field propagates source → DLO → DMO → CI measure →
+  semantic-layer rejection. For Home streams you CANNOT fix this in afd360 —
+  the DLO field type is auto-introspected from the sObject, so if that sObject
+  field is `type=currency` the DMO field will be too. The fix lives at the
+  **source sObject schema**: model money-per-unit amounts as `Number` (Double) +
+  a Text `CurrencyIsoCode` sibling (the shape standard DMOs use), not a
+  `Currency` field, for anything headed into a semantic model. The
   platform also auto-adds `KQ_Id__c`, `DataSource__c`, `DataSourceObject__c`,
   `cdp_sys_record_currency__c` to the live mapping — you don't author these.
 - **`recordModifiedFieldName`** defaults to `SystemModstamp`; override only if
