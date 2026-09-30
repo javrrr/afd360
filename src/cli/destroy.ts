@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { createInterface } from "node:readline";
 import pc from "picocolors";
 import { loadApp } from "./load-config.js";
 import { getSession } from "../client/auth.js";
@@ -18,7 +19,12 @@ export function registerDestroy(program: Command): void {
     .description("Remove everything this manifest manages from the org")
     .option("-c, --config <path>", "path to afd360.config.ts", DEFAULT_CONFIG)
     .option("-o, --org <alias>", "override stack targetOrg")
-    .action(async (opts: { config: string; org?: string }) => {
+    .option(
+      "-y, --yes",
+      "skip the confirmation prompt (required for non-interactive / CI teardown)",
+    )
+    .option("--force", "alias for --yes")
+    .action(async (opts: { config: string; org?: string; yes?: boolean; force?: boolean }) => {
       const app = await loadApp(opts.config);
       if (app.stacks.length !== 1) {
         throw new Error(
@@ -44,7 +50,9 @@ export function registerDestroy(program: Command): void {
 
       process.stdout.write(`${pc.bold("destroy")} ${orgAlias} (${stack.id})\n`);
 
-      // Pre-pass: orphan adoption (see adoptOrphans for full rationale).
+      // Pre-pass: orphan adoption (see adoptOrphans for full rationale). This
+      // is read-only + in-memory state synthesis — no deletes happen yet, so
+      // it's safe to run before the confirmation gate below.
       await adoptOrphans({
         ctx,
         state,
@@ -52,6 +60,30 @@ export function registerDestroy(program: Command): void {
         forwardOrder,
         log: (uid, id) => process.stdout.write(`  ${pc.yellow("adopt")}  ${uid} (orphan ${id})\n`),
       });
+
+      // Confirmation gate. destroy is delete-and-recreate and not reversible,
+      // so require an explicit go-ahead before the first delete. --force skips
+      // it (the CI/automation escape hatch); in a non-TTY without --force the
+      // prompt can't be answered, so promptConfirm returns false and we abort
+      // rather than tear down unattended — the guard is an explicit flag, not
+      // the absence of a prompt.
+      const toDeleteCount = reverseOrder.filter(
+        (uid) => state.resources[uid]?.salesforceId,
+      ).length;
+      const skipConfirm = opts.yes || opts.force;
+      if (toDeleteCount > 0 && !skipConfirm) {
+        const confirmed = await promptConfirm(
+          `${pc.yellow("!")} This deletes ${pc.bold(String(toDeleteCount))} resource(s) from ` +
+            `${pc.bold(orgAlias)} (stack "${stack.id}") and cannot be undone.\n` +
+            `  Type 'yes' to proceed: `,
+        );
+        if (!confirmed) {
+          process.stdout.write(
+            `${pc.bold("abort")} nothing deleted; re-run with --yes for non-interactive teardown.\n`,
+          );
+          return;
+        }
+      }
 
       try {
         for (const uid of reverseOrder) {
@@ -73,6 +105,24 @@ export function registerDestroy(program: Command): void {
       }
       process.stdout.write(`${pc.bold("done")}  state cleared.\n`);
     });
+}
+
+/**
+ * Minimal confirmation prompt. Returns false (abort) in non-interactive
+ * environments — CI-safe, since there's no user to answer; --yes/--force is
+ * the escape hatch in scripts. Mirrors deploy.ts's promptConfirm so the two
+ * commands behave identically. Accepts "yes" (destroy is destructive, so we
+ * require the full word rather than a bare "y").
+ */
+export async function promptConfirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolve) => rl.question(question, resolve));
+    return /^yes$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
 }
 
 function collectResources(scope: Construct): Array<Construct & ResourceConstruct> {

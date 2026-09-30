@@ -10,11 +10,21 @@
  * Test exercises `adoptOrphans` directly — the CLI plumbing around it is
  * exercised through integration manifests.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { App, Stack } from "../../src/core/app.js";
 import { DMO } from "../../src/resources/dmo.js";
 import { SearchIndex } from "../../src/resources/search-index.js";
-import { adoptOrphans } from "../../src/cli/destroy.js";
+import { adoptOrphans, promptConfirm } from "../../src/cli/destroy.js";
+
+// Controllable stub for the readline prompt. `question` immediately invokes
+// its callback with mockAnswer.value so promptConfirm resolves synchronously.
+const { mockAnswer } = vi.hoisted(() => ({ mockAnswer: { value: "yes" } }));
+vi.mock("node:readline", () => ({
+  createInterface: () => ({
+    question: (_q: string, cb: (a: string) => void) => cb(mockAnswer.value),
+    close: () => {},
+  }),
+}));
 import { isResourceConstruct } from "../../src/core/app.js";
 import { topologicalSort } from "../../src/core/graph.js";
 import type { ResourceContext, Construct } from "../../src/core/construct.js";
@@ -174,5 +184,40 @@ describe("adoptOrphans", () => {
     // No lookup attempted because state already had the entry.
     expect(get).not.toHaveBeenCalled();
     expect(state.resources["S/Idx"]?.salesforceId).toBe("18l-existing");
+  });
+});
+
+describe("promptConfirm (destroy confirmation gate)", () => {
+  const origIsTTY = process.stdin.isTTY;
+  afterEach(() => {
+    Object.defineProperty(process.stdin, "isTTY", { value: origIsTTY, configurable: true });
+    mockAnswer.value = "yes";
+  });
+
+  function setTTY(value: boolean): void {
+    Object.defineProperty(process.stdin, "isTTY", { value, configurable: true });
+  }
+
+  it("returns false in a non-TTY environment (CI-safe: abort without --yes)", async () => {
+    setTTY(false);
+    await expect(promptConfirm("proceed? ")).resolves.toBe(false);
+  });
+
+  it("returns true when the user types 'yes' at an interactive TTY", async () => {
+    setTTY(true);
+    mockAnswer.value = "yes";
+    await expect(promptConfirm("proceed? ")).resolves.toBe(true);
+  });
+
+  it("returns false for a bare 'y' — destroy requires the full word", async () => {
+    setTTY(true);
+    mockAnswer.value = "y";
+    await expect(promptConfirm("proceed? ")).resolves.toBe(false);
+  });
+
+  it("returns false for any other answer", async () => {
+    setTTY(true);
+    mockAnswer.value = "no";
+    await expect(promptConfirm("proceed? ")).resolves.toBe(false);
   });
 });
