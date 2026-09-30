@@ -160,7 +160,9 @@ export function registerDeploy(program: Command): void {
               const live = await c.resource.read(ctx, op.currentId!);
               const apiName = apiNameFromOutput(live, c.id);
               deployed.set(c.uniqueId, { salesforceId: op.currentId!, apiName });
-              state.resources[c.uniqueId] = stateEntry(c, op.currentId!, apiName, op.plannedHash, state.resources[c.uniqueId]);
+              // adopt = the resource already existed; afd360 did not create it,
+              // so record it as not-owned (owned:false). destroy leaves it be.
+              state.resources[c.uniqueId] = stateEntry(c, op.currentId!, apiName, op.plannedHash, state.resources[c.uniqueId], false);
               wrote += 1;
               break;
             }
@@ -184,7 +186,9 @@ export function registerDeploy(program: Command): void {
               // it, hashes match → noop. Without this, a poll timeout leaves
               // the resource as an orphan that needs manual adoption.
               deployed.set(c.uniqueId, { salesforceId: id, apiName });
-              state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, undefined);
+              // recreate = afd360 deleted the old resource and made a fresh one;
+              // it owns the result.
+              state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, undefined, true);
               wrote += 1;
               await maybeWaitReady(ctx, c, output);
               break;
@@ -195,8 +199,9 @@ export function registerDeploy(program: Command): void {
               const id = c.resource.idOf(output);
               const apiName = apiNameFromOutput(output, c.id);
               // Same pattern: persist before poll. See recreate comment.
+              // create = afd360 provisioned it → owned.
               deployed.set(c.uniqueId, { salesforceId: id, apiName });
-              state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId]);
+              state.resources[c.uniqueId] = stateEntry(c, id, apiName, op.plannedHash, state.resources[c.uniqueId], true);
               wrote += 1;
               await maybeWaitReady(ctx, c, output);
               break;
@@ -223,6 +228,7 @@ function stateEntry(
   apiName: string,
   hash: string,
   prev: StateResource | undefined,
+  owned: boolean,
 ): StateResource {
   const now = new Date().toISOString();
   const entry: StateResource = {
@@ -231,6 +237,9 @@ function stateEntry(
     salesforceId: id,
     hash,
     createdAt: prev?.createdAt ?? now,
+    // Provenance drives destroy: only owned resources are deleted. See
+    // StateResource.owned. Always written explicitly so state is unambiguous.
+    owned,
   };
   if (prev) entry.updatedAt = now;
   return entry;

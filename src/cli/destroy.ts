@@ -93,6 +93,27 @@ export function registerDestroy(program: Command): void {
             process.stdout.write(`  ${pc.gray("skip")}   ${uid} (not on org)\n`);
             continue;
           }
+          // Referenced-but-not-owned resources (e.g. Connection.fromExisting
+          // wrapping the built-in Salesforce_Home) must survive destroy. Drop
+          // the state entry so the reference stops being tracked, but never
+          // issue the delete. The resource's delete is a no-op too — this is
+          // the honest log.
+          if ((c as { isExisting?: boolean }).isExisting) {
+            process.stdout.write(`  ${pc.gray("skip")}   ${uid} (referenced, not owned)\n`);
+            delete state.resources[uid];
+            continue;
+          }
+          // Adopted resources (owned:false) pre-existed on the org — afd360
+          // recorded them but did not create them (e.g. a `create` that
+          // idempotently resolved to a platform-provisioned Home stream).
+          // Deleting them would exceed our blast radius, so leave them and
+          // just stop tracking. Legacy state files predate `owned` and are
+          // treated as owned (deleted) for back-compat.
+          if (entry.owned === false) {
+            process.stdout.write(`  ${pc.gray("skip")}   ${uid} (adopted, not owned)\n`);
+            delete state.resources[uid];
+            continue;
+          }
           process.stdout.write(`  ${pc.red("delete")} ${uid}\n`);
           await c.resource.delete(ctx, entry.salesforceId);
           delete state.resources[uid];

@@ -69,6 +69,26 @@ export async function computeOp(
     if (!live) {
       return { uniqueId: c.uniqueId, kind: "create", construct: c, plannedHash };
     }
+    // Ownership gate. afd360 must never delete a resource it doesn't own — a
+    // referenced one (construct.isExisting, e.g. DataStream.fromExisting /
+    // the built-in Salesforce_Home connection) or one it merely adopted
+    // (entry.owned === false, recorded when a `create` resolved to a
+    // pre-existing resource by natural key). For those, v1's delete-and-
+    // recreate-on-drift policy would destroy something we didn't provision,
+    // so we hold at noop regardless of hash drift or a failed live status.
+    // Owned resources (create/recreate, and legacy state files with no
+    // `owned` field) fall through to the normal drift handling below.
+    const notOwned =
+      (c as { isExisting?: boolean }).isExisting === true || entry.owned === false;
+    if (notOwned) {
+      return {
+        uniqueId: c.uniqueId,
+        kind: "noop",
+        construct: c,
+        currentId: c.resource.idOf(live),
+        plannedHash,
+      };
+    }
     if (c.resource.isFailed?.(live)) {
       // Live resource is in a terminal-failed state the API can't recover
       // (e.g. DataStream status=ERROR). Recreate unconditionally — even if

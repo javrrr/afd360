@@ -14,6 +14,15 @@ export interface StateResource {
   hash: string;
   createdAt: string;
   updatedAt?: string;
+  /**
+   * Provenance: did afd360 create this resource, or merely adopt one that
+   * already existed on the org? `create`/`recreate` set true; `adopt` sets
+   * false. `destroy` deletes only owned resources — an adopted (or referenced,
+   * i.e. `construct.isExisting`) resource is left on the org. Absent on
+   * pre-provenance state files; treated as owned (true) for back-compat so
+   * existing stacks still tear down what they created.
+   */
+  owned?: boolean;
 }
 
 export interface StackState {

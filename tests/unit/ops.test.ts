@@ -162,6 +162,57 @@ describe("computeOp", () => {
     expect(op.kind).toBe("recreate");
   });
 
+  it("ownership gate: holds an adopted (owned:false) resource at noop despite hash drift", async () => {
+    // Provenance: a `create` that resolved to a pre-existing resource is
+    // recorded owned:false. On a later deploy with drifted props, the normal
+    // policy would recreate (delete+create) — but we must never delete a
+    // resource afd360 didn't provision, so the gate holds it at noop.
+    const { conn } = buildStack();
+    const ctx = mockCtx();
+    (ctx.client.connections.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "0sH",
+      name: "DocsS3",
+      label: "DocsS3",
+      connectorType: "AwsS3",
+    });
+    const state = emptyState();
+    state.resources["RagDemo/DocsS3"] = {
+      type: "Connection",
+      apiName: "DocsS3",
+      salesforceId: "0sH",
+      hash: "sha256:OLD-drifted", // deliberately mismatched
+      createdAt: "2026-01-01T00:00:00Z",
+      owned: false,
+    };
+    const op = await computeOp(ctx, conn, state, new Map());
+    expect(op.kind).toBe("noop");
+    expect(op.currentId).toBe("0sH");
+  });
+
+  it("ownership gate: an owned:true resource still recreates on hash drift", async () => {
+    // Guard the gate's specificity — provenance must not suppress drift
+    // handling for resources afd360 actually created.
+    const { conn } = buildStack();
+    const ctx = mockCtx();
+    (ctx.client.connections.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "0sH",
+      name: "DocsS3",
+      label: "DocsS3",
+      connectorType: "AwsS3",
+    });
+    const state = emptyState();
+    state.resources["RagDemo/DocsS3"] = {
+      type: "Connection",
+      apiName: "DocsS3",
+      salesforceId: "0sH",
+      hash: "sha256:OLD-drifted",
+      createdAt: "2026-01-01T00:00:00Z",
+      owned: true,
+    };
+    const op = await computeOp(ctx, conn, state, new Map());
+    expect(op.kind).toBe("recreate");
+  });
+
   it("emits 'create' when state references a gone resource (drift)", async () => {
     const { conn } = buildStack();
     const ctx = mockCtx();
