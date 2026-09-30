@@ -266,5 +266,62 @@ export function buildDependentsMap(
   return dependents;
 }
 
+/**
+ * Orphan classification for a state entry whose manifest construct was removed.
+ *   - `prune`  — owned + live on the org; a `deploy --prune` would delete it.
+ *   - `forget` — not owned (adopted / fromExisting / salesforceHome); never
+ *                auto-deleted, must be dropped from state with `forget`.
+ *   - `stale`  — no live resource (no salesforceId); state-only cruft to forget.
+ */
+export type OrphanKind = "prune" | "forget" | "stale";
+
+export interface Orphan {
+  readonly uniqueId: string;
+  readonly entry: StateResource;
+  readonly kind: OrphanKind;
+}
+
+/**
+ * Find state entries whose construct no longer appears in the manifest.
+ *
+ * Removing a construct from `afd360.config.ts` otherwise does nothing — the
+ * resource stays in state AND live on the org (a silent orphan). Planning is
+ * manifest-only (`collectResources` walks the construct tree), so a removed
+ * resource is simply never visited. This pass reconciles the other direction:
+ * state-minus-manifest.
+ *
+ * Classification is read from the state entry alone (the construct is gone, so
+ * `type`/`salesforceId`/`owned` come from `state.resources[uid]`). A legacy
+ * entry with no `owned` field is treated as owned (→ `prune`), matching the
+ * back-compat convention in `computeOp`/`destroy`.
+ */
+export function collectOrphans(
+  manifestIds: ReadonlySet<string>,
+  state: StackState,
+): Orphan[] {
+  const orphans: Orphan[] = [];
+  for (const [uid, entry] of Object.entries(state.resources)) {
+    if (manifestIds.has(uid)) continue;
+    let kind: OrphanKind;
+    if (!entry.salesforceId) kind = "stale";
+    else if (entry.owned === false) kind = "forget";
+    else kind = "prune";
+    orphans.push({ uniqueId: uid, entry, kind });
+  }
+  return orphans;
+}
+
+/** One-line remedy shown next to an orphan in `diff` / `deploy` output. */
+export function orphanNote(kind: OrphanKind): string {
+  switch (kind) {
+    case "prune":
+      return "owned; `afd360 deploy --prune` would delete it";
+    case "forget":
+      return "not owned; run `afd360 forget` to untrack";
+    case "stale":
+      return "stale state, nothing live; run `afd360 forget` to untrack";
+  }
+}
+
 /** The resource interface, re-exported so CLI code doesn't need a deep import. */
 export type { Resource };

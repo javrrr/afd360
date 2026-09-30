@@ -9,6 +9,7 @@ import { registerDeploy } from "./deploy.js";
 import { registerDestroy } from "./destroy.js";
 import { registerImport } from "./import.js";
 import { registerInit } from "./init.js";
+import { registerForget } from "./forget.js";
 
 const program = new Command();
 
@@ -24,6 +25,7 @@ registerDeploy(program);
 registerDestroy(program);
 registerImport(program);
 registerInit(program);
+registerForget(program);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
