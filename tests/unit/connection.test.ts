@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { App, Stack } from "../../src/core/app.js";
-import { Connection, ConnectionResource } from "../../src/resources/connection.js";
+import {
+  Connection,
+  ConnectionResource,
+  ExistingConnectionResource,
+} from "../../src/resources/connection.js";
 import { ConnectionSchemaResource } from "../../src/resources/connection-schema.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
@@ -108,6 +112,93 @@ describe("Connection construct", () => {
     ]);
     const schemaEntry = plan.resources.find((r) => r.type === "ConnectionSchema")!;
     expect(schemaEntry.dependsOn).toEqual(["RagDemo/Docs"]);
+  });
+});
+
+describe("Connection.fromExisting (reference lifecycle)", () => {
+  it("references a pre-existing connection: isExisting, reference resource, name/label defaults", () => {
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "dev-org" });
+    const home = Connection.fromExisting(stack, "SfHome", {
+      name: "Salesforce_Home",
+      connectorType: "SalesforceDotCom",
+    });
+    expect(home.isExisting).toBe(true);
+    expect(home.resource).toBe(ExistingConnectionResource);
+    expect(home.devName).toBe("Salesforce_Home");
+    // label defaults to name when not supplied.
+    expect(home.props.label).toBe("Salesforce_Home");
+    expect(home.props.connectorType).toBe("SalesforceDotCom");
+  });
+
+  it("an owned Connection keeps the owning resource + isExisting=false", () => {
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "dev-org" });
+    const c = new Connection(stack, "DocsS3", { connectorType: "AwsS3", label: "Docs" });
+    expect(c.isExisting).toBe(false);
+    expect(c.resource).toBe(ConnectionResource);
+  });
+
+  it("create ADOPTS the pre-existing connection by name (never POSTs)", async () => {
+    const create = vi.fn();
+    const list = vi.fn().mockResolvedValue({
+      connections: [
+        {
+          id: "0IHbm0000004Home",
+          name: "Salesforce_Home",
+          label: "Salesforce Home",
+          connectorType: "SalesforceDotCom",
+        },
+      ],
+    });
+    const ctx = {
+      client: { connections: { list, create } } as unknown as ResourceContext["client"],
+      session: {
+        alias: "dev-org", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "dev-org",
+    } as ResourceContext;
+    const out = await ExistingConnectionResource.create(ctx, {
+      connectorType: "SalesforceDotCom",
+      label: "Salesforce_Home",
+      name: "Salesforce_Home",
+    });
+    expect(out.name).toBe("Salesforce_Home");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("create throws a clear error when the referenced connection isn't on the org", async () => {
+    const list = vi.fn().mockResolvedValue({ connections: [] });
+    const ctx = {
+      client: { connections: { list } } as unknown as ResourceContext["client"],
+      session: {
+        alias: "dev-org", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "dev-org",
+    } as ResourceContext;
+    await expect(
+      ExistingConnectionResource.create(ctx, {
+        connectorType: "SalesforceDotCom",
+        label: "Salesforce_Home",
+        name: "Salesforce_Home",
+      }),
+    ).rejects.toThrow(/REFERENCES a pre-existing connection/);
+  });
+
+  it("delete is a no-op — a referenced connection must never be deleted", async () => {
+    const del = vi.fn();
+    const ctx = {
+      client: { connections: { delete: del } } as unknown as ResourceContext["client"],
+      session: {
+        alias: "dev-org", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "dev-org",
+    } as ResourceContext;
+    await expect(ExistingConnectionResource.delete(ctx, "0Home")).resolves.toBeUndefined();
+    expect(del).not.toHaveBeenCalled();
   });
 });
 

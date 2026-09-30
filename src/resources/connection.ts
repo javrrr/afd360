@@ -276,22 +276,164 @@ export const ConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
   },
 };
 
+/**
+ * Resource ops for a connection afd360 REFERENCES but does not own — created
+ * via {@link Connection.fromExisting}. The canonical case is the built-in
+ * `Salesforce_Home` connector used by same-org CRM (Home) data streams: it is
+ * provisioned by the platform, has no credentials, and must survive `destroy`.
+ *
+ * Contract vs the owned {@link ConnectionResource}:
+ *  - create: never POSTs. Adopts the pre-existing connection by name (so its
+ *    id/apiName land in state for dependent DataStreams). Errors loudly if the
+ *    connection isn't already on the org — fromExisting is a reference, not a
+ *    create.
+ *  - delete: NO-OP. Deleting a built-in/shared connection would break every
+ *    other stream that references it. This is the whole reason the reference
+ *    lifecycle exists.
+ *  - update / isFailed / matchesAuthored: never trigger a recreate — a
+ *    referenced connection has no authored body to drift against, and a
+ *    recreate would delete-then-recreate a resource we don't own.
+ */
+export const ExistingConnectionResource: Resource<ConnectionProps, ConnectionOutput> = {
+  type: "Connection",
+  surface: "connect",
+  idOf: (output) => output.id,
+  read: ConnectionResource.read,
+  lookupByProps: ConnectionResource.lookupByProps!,
+  isFailed: () => false,
+  matchesAuthored: () => true,
+
+  async create(ctx, props): Promise<ConnectionOutput> {
+    const existing = await ConnectionResource.lookupByProps!(ctx, props);
+    if (!existing) {
+      throw new Error(
+        `Connection.fromExisting("${props.name}"): no connection named "${props.name}" ` +
+          `(connectorType "${props.connectorType}") exists on the org. fromExisting ` +
+          `REFERENCES a pre-existing connection (e.g. the built-in "Salesforce_Home") — ` +
+          `it does not create one. Verify the name/connectorType, or create it first.`,
+      );
+    }
+    return existing;
+  },
+
+  async update(ctx, salesforceId): Promise<ConnectionOutput> {
+    // Nothing to update — return the live view so the runner has an output.
+    const live = await ConnectionResource.read(ctx, salesforceId);
+    if (!live) {
+      throw new Error(
+        `Connection.fromExisting: referenced connection ${salesforceId} vanished from the org.`,
+      );
+    }
+    return live;
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  async delete(): Promise<void> {
+    // Intentionally a no-op — see the resource doc comment. afd360 must never
+    // delete a connection it only references.
+  },
+
+  hash: ConnectionResource.hash,
+};
 
 interface ConnectionOpts {
   readonly dependsOn?: readonly Construct[];
+  /** Internal: set by {@link Connection.fromExisting} to swap in the reference lifecycle. */
+  readonly existing?: boolean;
+  /**
+   * Internal: the connection's `dataSource` field, which a same-org CRM (Home)
+   * DataStream uses as its `datasource` — distinct from the connection's dev
+   * `name`. For the built-in Home connector the platform reports
+   * name="SalesforceDotCom_Home" but dataSource="Salesforce_Home" (confirmed
+   * live on a live org, ). Set by {@link Connection.salesforceHome}.
+   */
+  readonly dataSourceName?: string;
 }
 
+/** Platform constants for the built-in same-org CRM (Home) connector. */
+const SALESFORCE_HOME_CONNECTION_NAME = "SalesforceDotCom_Home";
+const SALESFORCE_HOME_DATASOURCE = "Salesforce_Home";
+
 export class Connection extends Construct {
-  readonly resource = ConnectionResource;
+  readonly resource: Resource<ConnectionProps, ConnectionOutput>;
   readonly props: ConnectionProps;
   readonly dependsOn: readonly Construct[];
   /** API dev name = authored `name` OR the construct's logical id. */
   readonly devName: string;
   /** Child ConnectionSchema construct, if the connector is IngestApi + schema is supplied. */
   readonly schema?: ConnectionSchema;
+  /**
+   * True when this construct only REFERENCES a pre-existing connection (built
+   * via {@link Connection.fromExisting}) rather than owning it. Referenced
+   * connections are adopted on deploy and skipped on destroy. Consumers
+   * (DataStream connector inference, destroy) branch on this.
+   */
+  readonly isExisting: boolean;
+  /**
+   * The connection's `dataSource` field, when it differs from the dev `name`.
+   * A same-org CRM (Home) DataStream's `datasource` is this value, not the
+   * connection name. Undefined for connections where they coincide.
+   */
+  readonly dataSourceName?: string;
+
+  /**
+   * Reference a connection the platform (or a human) already provisioned,
+   * instead of creating one. The canonical case is the built-in
+   * `Salesforce_Home` connector that same-org CRM (Home) data streams read
+   * from — it has no credentials and must never be deleted. For that connector
+   * prefer the {@link Connection.salesforceHome} preset, which fills in the
+   * platform's name/dataSource constants for you.
+   *
+   * afd360 adopts the connection by name on deploy (recording its id/apiName
+   * so dependent DataStreams resolve) and NEVER deletes it on destroy.
+   *
+   * `dataSourceName` is the connection's `dataSource` field — supply it only
+   * when it differs from `name` (as it does for the Home connector).
+   */
+  static fromExisting(
+    scope: Stack,
+    id: string,
+    props: { name: string; connectorType: string; label?: string; dataSourceName?: string },
+  ): Connection {
+    const opts: ConnectionOpts = { existing: true };
+    return new Connection(
+      scope,
+      id,
+      {
+        connectorType: props.connectorType,
+        label: props.label ?? props.name,
+        name: props.name,
+      },
+      props.dataSourceName !== undefined
+        ? { ...opts, dataSourceName: props.dataSourceName }
+        : opts,
+    );
+  }
+
+  /**
+   * Reference the built-in same-org CRM (Home) connector — the one afd360 uses
+   * to stream this org's own Salesforce objects (Account, Lead, custom
+   * objects, …) into Data Cloud. No credentials; provisioned by the platform;
+   * never deleted on destroy.
+   *
+   * Encodes the platform constants (connection name "SalesforceDotCom_Home",
+   * dataSource "Salesforce_Home", connectorType "SalesforceDotCom") so authors
+   * don't have to memorize them. If a given org reports different internal
+   * names, fall back to {@link Connection.fromExisting} with explicit values.
+   */
+  static salesforceHome(scope: Stack, id = "SalesforceHome"): Connection {
+    return Connection.fromExisting(scope, id, {
+      name: SALESFORCE_HOME_CONNECTION_NAME,
+      connectorType: "SalesforceDotCom",
+      dataSourceName: SALESFORCE_HOME_DATASOURCE,
+    });
+  }
 
   constructor(scope: Stack, id: string, props: ConnectionProps, opts: ConnectionOpts = {}) {
     super(scope, id);
+    this.isExisting = opts.existing ?? false;
+    this.resource = this.isExisting ? ExistingConnectionResource : ConnectionResource;
+    if (opts.dataSourceName !== undefined) this.dataSourceName = opts.dataSourceName;
     this.devName = props.name ?? id;
     // Normalize — store the resolved devName in props so downstream consumers
     // (ConnectionResource.create, hashing, synth output) never see an undefined
