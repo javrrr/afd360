@@ -265,7 +265,12 @@ Key facts:
   The DLO **primary key** (`Id`) MUST be in the field list or the platform
   400s on mapping create; afd360 rewrites that opaque `MISSING_ARGUMENT` into
   an actionable message. `Currency`/`Percent` are valid `DmoField.dataType`
-  values and must match the DLO field's type exactly (no coercion). The
+  values and must match the DLO field's type exactly (no coercion) — **but** a
+  `Currency`-typed field breaks Tableau Next semantic-model creation on a
+  single-currency org (its `cdp_sys_record_currency__c` is present but empty),
+  and there is no CI-SQL escape (`CAST` unsupported, `ROUND` keeps the type). If
+  a semantic layer is in play over this DMO, model amounts as `Number` + a Text
+  currency-code sibling (the shape standard DMOs use) instead of `Currency`. The
   platform also auto-adds `KQ_Id__c`, `DataSource__c`, `DataSourceObject__c`,
   `cdp_sys_record_currency__c` to the live mapping — you don't author these.
 - **`recordModifiedFieldName`** defaults to `SystemModstamp`; override only if

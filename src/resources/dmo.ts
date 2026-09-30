@@ -40,6 +40,16 @@ export interface DmoField {
    * Currency is different from ...type Number"). Author currency/percent
    * source columns as `Currency`/`Percent`, not `Number`. (Confirmed live,
    * a live org, 2026-09.)
+   *
+   * CAVEAT — downstream Tableau Next semantic models: a `Currency`-typed field
+   * breaks semantic-object creation on a single-currency org, where the data
+   * object's `cdp_sys_record_currency__c` is present but empty ("Unable to set
+   * field data type to Currency. The data object is missing a record currency
+   * field."). If you plan to build a semantic layer over this DMO, prefer
+   * modeling amounts as `Number` plus a Text currency-code sibling — the shape
+   * Salesforce's own standard DMOs use — rather than `Currency`. (This
+   * conflicts with the exact-match rule above; there is no clean CI-SQL escape
+   * — `CAST` is unsupported and `ROUND` preserves the Currency type.)
    */
   readonly dataType: string;
   readonly isPrimaryKey?: boolean;
