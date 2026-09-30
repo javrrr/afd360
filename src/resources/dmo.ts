@@ -41,15 +41,19 @@ export interface DmoField {
    * source columns as `Currency`/`Percent`, not `Number`. (Confirmed live,
    * a live org, 2026-09.)
    *
-   * CAVEAT — downstream Tableau Next semantic models: a `Currency`-typed field
-   * breaks semantic-object creation on a single-currency org, where the data
-   * object's `cdp_sys_record_currency__c` is present but empty ("Unable to set
-   * field data type to Currency. The data object is missing a record currency
-   * field."). If you plan to build a semantic layer over this DMO, prefer
-   * modeling amounts as `Number` plus a Text currency-code sibling — the shape
-   * Salesforce's own standard DMOs use — rather than `Currency`. (This
-   * conflicts with the exact-match rule above; there is no clean CI-SQL escape
-   * — `CAST` is unsupported and `ROUND` preserves the Currency type.)
+   * CAVEAT — downstream Tableau Next semantic models: the semantic layer rejects
+   * a `Currency`-typed field ONLY when the data object has no *populated*
+   * `cdp_sys_record_currency__c` (on a single-currency org that field is
+   * present-but-empty: "Unable to set field data type to Currency. The data
+   * object is missing a record currency field."). Keep `Currency` and fix it
+   * faithfully by supplying that field: enable Multiple Currencies on the org
+   * (populates it for DMOs — an org setting, not an afd360 knob), and for a
+   * `CalculatedInsight` alias `'USD' AS cdp_sys_record_currency__c` ALONE in the
+   * SELECT (NOT `CurrencyIsoCode__c` — the two are mutually exclusive; the
+   * measure stays Currency, the alias lands as Text). Retyping to `Number` is
+   * NOT an escape: the CI type engine is absorbing (`* 1.0` won't demote, `CAST`
+   * is unsupported, `ROUND` keeps Currency), and a Home-stream DLO field type is
+   * auto-introspected from the sObject.
    */
   readonly dataType: string;
   readonly isPrimaryKey?: boolean;

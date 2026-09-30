@@ -265,19 +265,27 @@ Key facts:
   The DLO **primary key** (`Id`) MUST be in the field list or the platform
   400s on mapping create; afd360 rewrites that opaque `MISSING_ARGUMENT` into
   an actionable message. `Currency`/`Percent` are valid `DmoField.dataType`
-  values and must match the DLO field's type exactly (no coercion) — **but** a
-  `Currency`-typed field breaks Tableau Next semantic-model creation on a
-  single-currency org (its `cdp_sys_record_currency__c` is present but empty),
-  and there is no escape downstream of the source: the CI type engine is
-  absorbing (any expression touching a Currency field stays Currency — `* 1.0`,
-  `SUM/COUNT`, etc. all fail to demote; `CAST` is unsupported, `ROUND` keeps the
-  type), so a Currency source field propagates source → DLO → DMO → CI measure →
-  semantic-layer rejection. For Home streams you CANNOT fix this in afd360 —
-  the DLO field type is auto-introspected from the sObject, so if that sObject
-  field is `type=currency` the DMO field will be too. The fix lives at the
-  **source sObject schema**: model money-per-unit amounts as `Number` (Double) +
-  a Text `CurrencyIsoCode` sibling (the shape standard DMOs use), not a
-  `Currency` field, for anything headed into a semantic model. The
+  values and must match the DLO field's type exactly (no coercion). Keeping
+  `Currency` is correct — but if this DMO (or a
+  `CalculatedInsight` over it) will feed a **Tableau Next semantic model**, mind
+  this gotcha: the semantic layer rejects a `Currency` field ONLY when the data
+  object has no *populated* `cdp_sys_record_currency__c` (on a single-currency
+  org it's present-but-empty: "...missing a record currency field"). Fix it
+  faithfully — do NOT retype to `Number` — by supplying that field, in two
+  places:
+    - **DMOs**: enable **Multiple Currencies** on the org, which populates
+      `cdp_sys_record_currency__c` with the corporate ISO. This is an ORG SETTING
+      (afd360 can't set it) — document it as a prerequisite. For a Home DMO the
+      field type is auto-introspected from the sObject, so retyping isn't even an
+      option; this is the only faithful fix.
+    - **CalculatedInsight outputs**: a CI never auto-carries the field — alias it
+      in the SELECT, `'USD' AS cdp_sys_record_currency__c` (corporate ISO). The
+      measure stays `Currency`; the alias lands as `Text`. Alias it **ALONE, NOT
+      `CurrencyIsoCode__c`**: the two are mutually exclusive, and supplying
+      `CurrencyIsoCode__c` (or both) leaves the record-currency field absent, so
+      it's still rejected. (Retyping in the CI won't help either — its type
+      engine is absorbing: `* 1.0` / `SUM/COUNT` don't demote, `CAST` is
+      unsupported, `ROUND` keeps `Currency`.) The
   platform also auto-adds `KQ_Id__c`, `DataSource__c`, `DataSourceObject__c`,
   `cdp_sys_record_currency__c` to the live mapping — you don't author these.
 - **`recordModifiedFieldName`** defaults to `SystemModstamp`; override only if
