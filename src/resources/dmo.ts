@@ -29,7 +29,18 @@ export interface DmoField {
   /** Field dev name without `__c` — platform adds it. */
   readonly name: string;
   readonly label?: string;
-  /** Text | Number | DateTime | Date | Url | Email | Boolean. */
+  /**
+   * DMO field data type. Live-verified accepted values:
+   * `Text` | `Number` | `DateTime` | `Date` | `Url` | `Email` | `Boolean` |
+   * `Currency` | `Percent`.
+   *
+   * When this DMO is a `Mapping` target, the type MUST match the source DLO
+   * field's type exactly — the platform does not coerce. Mapping a `Currency`
+   * DLO field into a `Number` DMO field 400s with INVALID_INPUT ("...type
+   * Currency is different from ...type Number"). Author currency/percent
+   * source columns as `Currency`/`Percent`, not `Number`. (Confirmed live,
+   * a live org, 2026-09.)
+   */
   readonly dataType: string;
   readonly isPrimaryKey?: boolean;
 }
