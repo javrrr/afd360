@@ -19,6 +19,8 @@ import {
   buildDependentsMap,
   computeBlastRadius,
   computeRecreateDrainOrder,
+  collectOrphans,
+  orphanNote,
   type Op,
   type OpKind,
 } from "./ops.js";
@@ -259,6 +261,22 @@ export function registerDeploy(program: Command): void {
       process.stdout.write(
         `${pc.bold("done")}  ${summarizeOps(ops)} — ${wrote} write${wrote === 1 ? "" : "s"}; state saved.\n`,
       );
+
+      // Orphan advisory. A plain deploy never deletes an orphan (safe by
+      // default) — it applies the manifest, then warns about state entries
+      // whose construct was removed, pointing at the explicit remedy. Deletion
+      // is a later, opt-in `--prune` phase.
+      const manifestIds = new Set(resources.map((r) => r.uniqueId));
+      const orphans = collectOrphans(manifestIds, state);
+      if (orphans.length > 0) {
+        process.stderr.write(
+          `\n${pc.yellow("warn")}  ${orphans.length} resource${orphans.length === 1 ? "" : "s"} in state ` +
+            `${orphans.length === 1 ? "is" : "are"} no longer in the manifest (not deleted):\n`,
+        );
+        for (const o of orphans) {
+          process.stderr.write(`        ${o.uniqueId} ${pc.gray(`— ${orphanNote(o.kind)}`)}\n`);
+        }
+      }
     });
 }
 
@@ -282,6 +300,11 @@ function stateEntry(
     owned,
   };
   if (prev) entry.updatedAt = now;
+  // Record last-known dependency edges so orphan prune can reverse-topo-sort
+  // deletions after the constructs are removed from the manifest. Only when
+  // non-empty, to keep leaf-resource entries clean.
+  const deps = c.dependsOn.map((d) => d.uniqueId);
+  if (deps.length > 0) entry.dependsOn = deps;
   return entry;
 }
 

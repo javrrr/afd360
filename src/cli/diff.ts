@@ -13,7 +13,10 @@ import {
   summarizeOps,
   buildDependentsMap,
   computeBlastRadius,
+  collectOrphans,
+  orphanNote,
   type OpKind,
+  type OrphanKind,
 } from "./ops.js";
 
 const DEFAULT_CONFIG = "afd360.config.ts";
@@ -23,6 +26,12 @@ const LABELS: Record<OpKind, (s: string) => string> = {
   create: (s) => pc.green(s),
   adopt: (s) => pc.yellow(s),
   recreate: (s) => pc.red(s),
+};
+
+const ORPHAN_LABELS: Record<OrphanKind, (s: string) => string> = {
+  prune: (s) => pc.red(s),
+  forget: (s) => pc.yellow(s),
+  stale: (s) => pc.gray(s),
 };
 
 export function registerDiff(program: Command): void {
@@ -91,6 +100,23 @@ export function registerDiff(program: Command): void {
           for (const child of children) {
             process.stdout.write(pc.red(`       ${child}\n`));
           }
+        }
+      }
+
+      // Orphans: state entries whose construct was removed from the manifest.
+      // Non-destructive here — diff only reports them (with the remedy). This
+      // closes the "removed a construct, diff planned 0 deletes" surprise.
+      const manifestIds = new Set(resources.map((r) => r.uniqueId));
+      const orphans = collectOrphans(manifestIds, state);
+      if (orphans.length > 0) {
+        process.stdout.write(
+          `\n  ${orphans.length} orphan${orphans.length === 1 ? "" : "s"} (in state, not in manifest):\n`,
+        );
+        for (const o of orphans) {
+          const tag = o.kind.padEnd(8, " ");
+          process.stdout.write(
+            `  ${ORPHAN_LABELS[o.kind](tag)} ${o.uniqueId} ${pc.gray(`(${orphanNote(o.kind)})`)}\n`,
+          );
         }
       }
     });

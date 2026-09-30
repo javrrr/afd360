@@ -6,6 +6,7 @@ import {
   computeBlastRadius,
   computeRecreateDrainOrder,
   buildDependentsMap,
+  collectOrphans,
   type Op,
 } from "../../src/cli/ops.js";
 import type { StackState } from "../../src/core/state.js";
@@ -356,6 +357,74 @@ describe("computeRecreateDrainOrder (recreate delete-ordering)", () => {
       allDeletable,
     );
     expect(drain).toEqual(["Viz", "Model", "CI"]);
+  });
+});
+
+describe("collectOrphans (orphan classification)", () => {
+  function stateWith(
+    resources: StackState["resources"],
+  ): StackState {
+    return {
+      stackName: "RagDemo",
+      targetOrg: "dev-org",
+      lastDeployedAt: null,
+      resources,
+    };
+  }
+
+  it("returns nothing when every state entry is still in the manifest", () => {
+    const state = stateWith({
+      "S/A": { type: "Connection", apiName: "A", salesforceId: "0sHA", hash: "h", createdAt: "t", owned: true },
+    });
+    expect(collectOrphans(new Set(["S/A"]), state)).toEqual([]);
+  });
+
+  it("classifies an owned, live entry not in the manifest as 'prune'", () => {
+    const state = stateWith({
+      "S/Gone": { type: "DMO", apiName: "Gone__dlm", salesforceId: "0dm", hash: "h", createdAt: "t", owned: true },
+    });
+    const orphans = collectOrphans(new Set<string>(), state);
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]!.kind).toBe("prune");
+    expect(orphans[0]!.uniqueId).toBe("S/Gone");
+  });
+
+  it("treats a legacy entry with no `owned` field as owned → 'prune'", () => {
+    // Back-compat: pre-provenance state files have no owned flag; matches the
+    // owned-by-default convention in computeOp/destroy.
+    const state = stateWith({
+      "S/Legacy": { type: "Connection", apiName: "L", salesforceId: "0sH", hash: "h", createdAt: "t" },
+    });
+    expect(collectOrphans(new Set<string>(), state)[0]!.kind).toBe("prune");
+  });
+
+  it("classifies a not-owned (adopted/fromExisting) live entry as 'forget'", () => {
+    const state = stateWith({
+      "S/Adopted": { type: "Connection", apiName: "A", salesforceId: "0sH", hash: "h", createdAt: "t", owned: false },
+    });
+    expect(collectOrphans(new Set<string>(), state)[0]!.kind).toBe("forget");
+  });
+
+  it("classifies an entry with no salesforceId as 'stale' (regardless of ownership)", () => {
+    const state = stateWith({
+      "S/Stale": { type: "Mapping", apiName: "M", hash: "h", createdAt: "t", owned: true },
+    });
+    expect(collectOrphans(new Set<string>(), state)[0]!.kind).toBe("stale");
+  });
+
+  it("classifies a mix and skips manifest-present entries", () => {
+    const state = stateWith({
+      "S/Kept": { type: "Connection", apiName: "K", salesforceId: "0sK", hash: "h", createdAt: "t", owned: true },
+      "S/Prune": { type: "DMO", apiName: "P__dlm", salesforceId: "0dm", hash: "h", createdAt: "t", owned: true },
+      "S/Forget": { type: "Connection", apiName: "F", salesforceId: "0sF", hash: "h", createdAt: "t", owned: false },
+      "S/Stale": { type: "Mapping", apiName: "M", hash: "h", createdAt: "t" },
+    });
+    const byId = new Map(collectOrphans(new Set(["S/Kept"]), state).map((o) => [o.uniqueId, o.kind]));
+    expect(byId.get("S/Kept")).toBeUndefined();
+    expect(byId.get("S/Prune")).toBe("prune");
+    expect(byId.get("S/Forget")).toBe("forget");
+    expect(byId.get("S/Stale")).toBe("stale");
+    expect(byId.size).toBe(3);
   });
 });
 

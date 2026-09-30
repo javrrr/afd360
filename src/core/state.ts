@@ -23,6 +23,14 @@ export interface StateResource {
    * existing stacks still tear down what they created.
    */
   owned?: boolean;
+  /**
+   * uniqueIds of the resources this one depended on at its last deploy, copied
+   * from `construct.dependsOn`. Lets orphan prune reverse-topo-sort deletions
+   * using last-known edges even after the constructs are removed from the
+   * manifest (the live construct graph is gone by then). Absent on
+   * pre-feature state files — prune falls back to a type-priority order.
+   */
+  dependsOn?: string[];
 }
 
 export interface StackState {
