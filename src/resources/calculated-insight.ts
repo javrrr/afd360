@@ -51,10 +51,18 @@ export interface CalculatedInsightProps {
    */
   readonly publishScheduleStartDateTime?: string;
   /**
-   * Explicit dependency list. CIs typically depend on the DMOs referenced in
-   * their expression — afd360 can't statically parse SQL to derive them, so
-   * the user either lists the DMO constructs here or trusts the ordering
-   * within a single `afd360 deploy` run (all DMOs finish before any CI).
+   * Explicit dependency list. CIs depend on the DMOs referenced in their
+   * expression — afd360 can't statically parse SQL to derive them, so list
+   * the DMO constructs here.
+   *
+   * IMPORTANT: a CI create validates against the DMOs' **fact tables**, which
+   * only materialize after the DLO→DMO **Mapping** has processed data — the
+   * DMO merely *existing* is not enough. Listing a DMO construct here therefore
+   * also auto-wires a dependency on that DMO's Mapping(s) in the same stack
+   * (reciprocal, declaration-order-independent — see
+   * `attachMappingToCalculatedInsights`). Without this, a fresh deploy can
+   * attempt the CI before any mapping exists and 500 with
+   * `ENTITY_SAVE_ERROR "Error getting FactTable …__dlm"`, aborting the deploy.
    */
   readonly dependsOn?: ReadonlyArray<DMO | Construct>;
 }
@@ -252,5 +260,76 @@ export class CalculatedInsight extends Construct {
       ...(props.dependsOn ?? []),
       ...(opts.dependsOn ?? []),
     ];
+
+    // Reciprocal Mapping wiring (mirrors SearchIndex / Relationship). A CI
+    // validates against the DMO FACT TABLES, which only exist after the
+    // DLO→DMO Mapping has run — so the CI must deploy AFTER the mappings of
+    // every DMO it references, not merely after the DMOs. Scan already-built
+    // Mapping siblings whose target DMO is one this CI depends on and add
+    // them; the Mapping constructor reciprocates for the Mapping-after-CI
+    // case (attachMappingToCalculatedInsights), so declaration order is moot.
+    const dmoNames = dmoFullNamesOf(this.dependsOn);
+    if (dmoNames.size > 0) {
+      for (const sibling of scope.children) {
+        if (
+          isMappingForAnyDmo(sibling, dmoNames) &&
+          !this.dependsOn.includes(sibling)
+        ) {
+          (this.dependsOn as Construct[]).push(sibling);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Collect the full DMO dev names (`…__dlm`) among a dependsOn list. Duck-typed
+ * (resource.type === "DMO" + a string `fullName`) so cross-realm DMO instances
+ * — user's `src/` vs the CLI's `dist/` — are still recognized.
+ */
+function dmoFullNamesOf(deps: readonly Construct[]): Set<string> {
+  const names = new Set<string>();
+  for (const d of deps) {
+    const r = (d as { resource?: { type?: unknown } }).resource;
+    if (!r || (r as { type?: string }).type !== "DMO") continue;
+    const fullName = (d as { fullName?: unknown }).fullName;
+    if (typeof fullName === "string") names.add(fullName);
+  }
+  return names;
+}
+
+/** Is `c` a Mapping whose target DMO is in `dmoNames`? Duck-typed cross-realm. */
+function isMappingForAnyDmo(c: Construct, dmoNames: Set<string>): boolean {
+  const r = (c as { resource?: { type?: unknown } }).resource;
+  if (!r || (r as { type?: string }).type !== "Mapping") return false;
+  const targetDmoName = (c as { props?: { targetDmoName?: unknown } }).props?.targetDmoName;
+  return typeof targetDmoName === "string" && dmoNames.has(targetDmoName);
+}
+
+/**
+ * Internal API for the Mapping construct. When a Mapping is constructed, walk
+ * every existing CalculatedInsight sibling and add the Mapping as a dep on any
+ * CI that references (via its dependsOn DMOs) the Mapping's target DMO.
+ *
+ * Why this exists: a CI create validates against the DMO's fact table, which
+ * only materializes after the DLO→DMO Mapping has processed data. afd360's
+ * CI deps only point at the DMOs, so on a fresh deploy the CI could run in
+ * parallel with — or before — its mappings and 500 with
+ * `ENTITY_SAVE_ERROR "Error getting FactTable"`, aborting the deploy.
+ *
+ * Mirrors the SearchIndex / Relationship reciprocal-wiring pattern. See
+ * `Mapping`'s constructor for the call site.
+ */
+export function attachMappingToCalculatedInsights(
+  stack: { children: Construct[] },
+  mapping: Construct & { props: { targetDmoName: string } },
+): void {
+  for (const sibling of stack.children) {
+    const r = (sibling as { resource?: { type?: unknown } }).resource;
+    if (!r || (r as { type?: string }).type !== "CalculatedInsight") continue;
+    const ci = sibling as unknown as { dependsOn: Construct[] };
+    if (!dmoFullNamesOf(ci.dependsOn).has(mapping.props.targetDmoName)) continue;
+    if (ci.dependsOn.includes(mapping)) continue;
+    (ci.dependsOn as Construct[]).push(mapping);
   }
 }

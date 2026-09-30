@@ -4,6 +4,10 @@ import {
   CalculatedInsight,
   CalculatedInsightResource,
 } from "../../src/resources/calculated-insight.js";
+import { DMO } from "../../src/resources/dmo.js";
+import { Mapping } from "../../src/resources/mapping.js";
+import { DataStream } from "../../src/resources/data-stream.js";
+import { Connection } from "../../src/resources/connection.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
 function mockCtx(): ResourceContext {
@@ -84,6 +88,99 @@ describe("CalculatedInsight construct", () => {
     const ci = new CalculatedInsight(stack, "X", {
       expression: "SELECT 1",
       dependsOn: [],
+    });
+    expect(ci.dependsOn).toEqual([]);
+  });
+});
+
+describe("CalculatedInsight ↔ Mapping reciprocal auto-wiring (finding #1)", () => {
+  // A CI validates against DMO FACT TABLES, which only materialize after the
+  // DLO→DMO Mapping runs. So a CI that references a DMO must deploy after that
+  // DMO's Mapping — not merely after the DMO. Verify the wiring both ways.
+  function buildWired() {
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "x" });
+    const dmo = new DMO(stack, "Quote", {
+      fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+    });
+    const conn = new Connection(stack, "Ing", {
+      connectorType: "IngestApi",
+      label: "Ing",
+      schema: { name: "Quote", label: "Quote", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    const stream = new DataStream(stack, "QuoteStream", {
+      connection: conn, sourceObject: "Quote", primaryKey: { name: "Id" },
+    });
+    return { app, stack, dmo, stream };
+  }
+
+  it("CI-after-Mapping: CI constructor finds the existing Mapping for its DMO", () => {
+    const { stack, dmo, stream } = buildWired();
+    const map = new Mapping(stack, "QuoteMap", {
+      source: stream, target: dmo,
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    const ci = new CalculatedInsight(stack, "QuoteCI", {
+      expression: "SELECT COUNT(Id__c) FROM Quote__dlm",
+      dependsOn: [dmo],
+    });
+    expect(ci.dependsOn).toContain(dmo);
+    expect(ci.dependsOn).toContain(map);
+  });
+
+  it("Mapping-after-CI: Mapping constructor pushes itself onto CI.dependsOn (reciprocal)", () => {
+    const { stack, dmo, stream } = buildWired();
+    const ci = new CalculatedInsight(stack, "QuoteCI", {
+      expression: "SELECT COUNT(Id__c) FROM Quote__dlm",
+      dependsOn: [dmo],
+    });
+    // Before any mapping, the CI depends only on the DMO it was given.
+    expect(ci.dependsOn).toEqual([dmo]);
+    const map = new Mapping(stack, "QuoteMap", {
+      source: stream, target: dmo,
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    expect(ci.dependsOn).toContain(map);
+  });
+
+  it("does not double-add the same Mapping to CI.dependsOn", () => {
+    const { stack, dmo, stream } = buildWired();
+    const map = new Mapping(stack, "QuoteMap", {
+      source: stream, target: dmo,
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    const ci = new CalculatedInsight(stack, "QuoteCI", {
+      expression: "SELECT COUNT(Id__c) FROM Quote__dlm",
+      dependsOn: [dmo],
+    });
+    const occurrences = ci.dependsOn.filter((d) => d === map).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("does not wire a Mapping that targets a different DMO", () => {
+    const { stack, dmo, stream } = buildWired();
+    const otherDmo = new DMO(stack, "Other", {
+      fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+    });
+    const otherMap = new Mapping(stack, "OtherMap", {
+      source: stream, target: otherDmo,
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    const ci = new CalculatedInsight(stack, "QuoteCI", {
+      expression: "SELECT COUNT(Id__c) FROM Quote__dlm",
+      dependsOn: [dmo],
+    });
+    expect(ci.dependsOn).not.toContain(otherMap);
+  });
+
+  it("wires nothing when the CI lists no DMO constructs (no basis to infer)", () => {
+    const { stack, dmo, stream } = buildWired();
+    new Mapping(stack, "QuoteMap", {
+      source: stream, target: dmo,
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    const ci = new CalculatedInsight(stack, "QuoteCI", {
+      expression: "SELECT COUNT(Id__c) FROM Quote__dlm",
     });
     expect(ci.dependsOn).toEqual([]);
   });
