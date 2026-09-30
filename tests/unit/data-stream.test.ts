@@ -4,6 +4,7 @@ import { Connection } from "../../src/resources/connection.js";
 import {
   DataStream,
   DataStreamResource,
+  ExistingDataStreamResource,
 } from "../../src/resources/data-stream.js";
 import { errBodyIncludes } from "../../src/client/retry.js";
 import type { ResourceContext } from "../../src/core/construct.js";
@@ -522,5 +523,265 @@ describe("quirk A1 — errBodyIncludes('Illegal argument') predicate", () => {
   });
   it("does not match unrelated errors", () => {
     expect(errBodyIncludes({ status: 400, body: "Bad request" }, "Illegal argument")).toBe(false);
+  });
+});
+
+describe("SalesforceHome (same-org CRM / Home) DataStream", () => {
+  function buildHomeFixture(sourceObject = "Account", category?: "Profile" | "Other") {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    const home = Connection.salesforceHome(stack);
+    const stream = new DataStream(stack, `${sourceObject}Home`, {
+      connection: home,
+      sourceObject,
+      ...(category ? { category } : {}),
+      primaryKey: { name: "Id" },
+    });
+    return { app, stack, home, stream };
+  }
+
+  it("Connection.salesforceHome encodes the platform constants", () => {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    const home = Connection.salesforceHome(stack);
+    expect(home.isExisting).toBe(true);
+    // Connection dev name (used for connectorDetails.name / adopt-by-name).
+    expect(home.devName).toBe("SalesforceDotCom_Home");
+    expect(home.props.connectorType).toBe("SalesforceDotCom");
+    // dataSource differs from the dev name — this is the stream's `datasource`.
+    expect(home.dataSourceName).toBe("Salesforce_Home");
+  });
+
+  it("names the DLO <Object>_Home__dll (not <Object>__dll)", () => {
+    const { stream } = buildHomeFixture("Account");
+    expect(stream.dlo.name).toBe("Account_Home__dll");
+  });
+
+  it("resolveProps threads the connection's dataSource as datasourceName", () => {
+    const { home, stream } = buildHomeFixture("Account");
+    const deployed = new Map([
+      [home.uniqueId, { salesforceId: "0hMbm000002SghVEAS", apiName: "SalesforceDotCom_Home" }],
+    ]);
+    const resolved = stream.resolveProps(deployed)!;
+    expect(resolved.connectionName).toBe("SalesforceDotCom_Home");
+    expect(resolved.datasourceName).toBe("Salesforce_Home");
+  });
+
+  it("builds the confirmed SFDC POST body (asymmetry-safe: no type/advancedAttributes/sourceFields)", async () => {
+    const { home, stream } = buildHomeFixture("Account", "Profile");
+    const ctx = mockCtx();
+    const create = (ctx.client.dataStreams as unknown as { create: ReturnType<typeof vi.fn> }).create;
+    create.mockResolvedValue({ name: "AccountHome", recordId: "1ds" });
+    const deployed = new Map([
+      [home.uniqueId, { salesforceId: "0hMbm000002SghVEAS", apiName: "SalesforceDotCom_Home" }],
+    ]);
+    await DataStreamResource.create(ctx, stream.resolveProps(deployed)!);
+    const body = create.mock.calls[0]![0] as Record<string, unknown>;
+
+    expect(body["datastreamType"]).toBe("SFDC");
+    // datasource = connection's dataSource, NOT the dev name, NOT prefixed.
+    expect(body["datasource"]).toBe("Salesforce_Home");
+    // connectorType is the SalesforceDotCom discriminator; connectorDetails
+    // carries the connection dev name + sourceObject, and NO `type` (echoing
+    // the GET's connectorDetails.type 400s with JSON_PARSER_ERROR).
+    expect(body["connectorInfo"]).toEqual({
+      connectorType: "SalesforceDotCom",
+      connectorDetails: { name: "SalesforceDotCom_Home", sourceObject: "Account" },
+    });
+    // No S3-style fields — auto-introspection is PK-driven.
+    expect(body["advancedAttributes"]).toBeUndefined();
+    expect(body["sourceFields"]).toBeUndefined();
+    expect(body["mappings"]).toBeUndefined();
+    const dlo = body["dataLakeObjectInfo"] as Record<string, unknown>;
+    expect(dlo["name"]).toBe("Account_Home__dll");
+    expect(dlo["recordModifiedFieldName"]).toBe("SystemModstamp");
+    expect(dlo["dataLakeFieldInputRepresentations"]).toEqual([
+      { name: "Id", label: "Id", dataType: "Text", isPrimaryKey: true },
+    ]);
+    expect(body["refreshConfig"]).toEqual({
+      refreshMode: "UPSERT",
+      frequency: { frequencyType: "BATCH" },
+    });
+  });
+
+  it("honors a recordModifiedFieldName override", async () => {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    const home = Connection.salesforceHome(stack);
+    const stream = new DataStream(stack, "RegionHome", {
+      connection: home,
+      sourceObject: "P_Region__c",
+      primaryKey: { name: "Id" },
+      recordModifiedFieldName: "LastModifiedDate",
+    });
+    const ctx = mockCtx();
+    const create = (ctx.client.dataStreams as unknown as { create: ReturnType<typeof vi.fn> }).create;
+    create.mockResolvedValue({ name: "RegionHome", recordId: "1ds" });
+    const deployed = new Map([
+      [home.uniqueId, { salesforceId: "0h1", apiName: "SalesforceDotCom_Home" }],
+    ]);
+    await DataStreamResource.create(ctx, stream.resolveProps(deployed)!);
+    const body = create.mock.calls[0]![0] as Record<string, unknown>;
+    const dlo = body["dataLakeObjectInfo"] as Record<string, unknown>;
+    // Custom object: trailing __c is stripped before _Home__dll. Confirmed
+    // live on a live org — "P_Region__c" materialized as "P_Region_Home__dll".
+    expect(dlo["name"]).toBe("P_Region_Home__dll");
+    expect(dlo["recordModifiedFieldName"]).toBe("LastModifiedDate");
+  });
+
+  it("strips a trailing __c from custom objects when deriving the DLO name", () => {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    const home = Connection.salesforceHome(stack);
+    // Standard object: name passes through unchanged.
+    const std = new DataStream(stack, "AccountHome", {
+      connection: home,
+      sourceObject: "Account",
+      primaryKey: { name: "Id" },
+    });
+    expect(std.dlo.name).toBe("Account_Home__dll");
+    // Custom object: __c collapses out (NOT "P_Region__c_Home__dll").
+    const custom = new DataStream(stack, "RegionHome2", {
+      connection: home,
+      sourceObject: "P_Region__c",
+      primaryKey: { name: "Id" },
+    });
+    expect(custom.dlo.name).toBe("P_Region_Home__dll");
+  });
+
+  it("adopts a pre-existing Home stream by its _Home__dll name (not <Object>__dll)", async () => {
+    // The platform provisions Home streams whose live `name` (e.g.
+    // "Account_Home") differs from the authored dev name ("AccountHome"), so
+    // the only stable natural key is the DLO name. Regression: lookupByProps
+    // must derive that as "Account_Home__dll" — matching against "Account__dll"
+    // misses it and the op is misclassified `create` (a diff/reality mismatch).
+    const { home, stream } = buildHomeFixture("Account", "Profile");
+    const ctx = mockCtx();
+    const list = (ctx.client.dataStreams as unknown as { list: ReturnType<typeof vi.fn> }).list;
+    const get = (ctx.client.dataStreams as unknown as { get: ReturnType<typeof vi.fn> }).get;
+    list.mockResolvedValue({
+      dataStreams: [
+        {
+          name: "Account_Home",
+          recordId: "1dsbm000001PqXVAA0",
+          label: "Account Home",
+          dataLakeObjectInfo: { name: "Account_Home__dll" },
+        },
+      ],
+    });
+    get.mockResolvedValue({ name: "Account_Home", recordId: "1dsbm000001PqXVAA0" });
+    const deployed = new Map([
+      [home.uniqueId, { salesforceId: "0hMbm000002SghVEAS", apiName: "SalesforceDotCom_Home" }],
+    ]);
+    const found = await DataStreamResource.lookupByProps!(ctx, stream.resolveProps(deployed)!);
+    // Found the platform stream via the correct DLO name, and read it by id.
+    expect(get).toHaveBeenCalledWith("1dsbm000001PqXVAA0");
+    expect(found).not.toBeNull();
+  });
+
+  it("rejects a freshly-created (non-referenced) SalesforceDotCom connection", () => {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    // A normal `new Connection` with connectorType SalesforceDotCom is the
+    // unsupported external/OAuth path — only the referenced Home connector works.
+    const ext = new Connection(stack, "ExtCrm", {
+      connectorType: "SalesforceDotCom",
+      label: "External CRM",
+    });
+    expect(
+      () =>
+        new DataStream(stack, "ExtStream", {
+          connection: ext,
+          sourceObject: "Account",
+          primaryKey: { name: "Id" },
+        }),
+    ).toThrow(/only supported for the built-in same-org CRM/);
+  });
+});
+
+describe("DataStream.fromExisting (reference lifecycle)", () => {
+  function buildRef(sourceObject = "Account") {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    const home = Connection.salesforceHome(stack);
+    const stream = DataStream.fromExisting(stack, `${sourceObject}Ref`, {
+      connection: home,
+      sourceObject,
+    });
+    return { app, stack, home, stream };
+  }
+
+  it("swaps in the reference lifecycle and derives a Mapping-usable DLO name", () => {
+    const { stream } = buildRef("Account");
+    expect(stream.isExisting).toBe(true);
+    expect(stream.resource).toBe(ExistingDataStreamResource);
+    // The DLO name is derived identically to an owned Home stream, so it's a
+    // valid Mapping source (the whole point of fromExisting — FINDING M3).
+    expect(stream.dlo.name).toBe("Account_Home__dll");
+  });
+
+  it("an owned DataStream keeps DataStreamResource + isExisting=false", () => {
+    const app = new App();
+    const stack = new Stack(app, "Home", { targetOrg: "dev-org" });
+    const home = Connection.salesforceHome(stack);
+    const owned = new DataStream(stack, "AccountHome", {
+      connection: home,
+      sourceObject: "Account",
+      primaryKey: { name: "Id" },
+    });
+    expect(owned.isExisting).toBe(false);
+    expect(owned.resource).toBe(DataStreamResource);
+  });
+
+  it("serves as a Mapping source (dlo.name + auto-wired dependency)", async () => {
+    const { stack, stream } = buildRef("Account");
+    const { Mapping } = await import("../../src/resources/mapping.js");
+    const mapping = new Mapping(stack, "AccountMap", {
+      source: stream,
+      target: "ssot__Account__dlm",
+      fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+    });
+    expect(mapping.props.sourceDloName).toBe("Account_Home__dll");
+    expect(mapping.dependsOn).toContain(stream);
+  });
+
+  it("create adopts the pre-existing stream by DLO name — never POSTs", async () => {
+    const { home, stream } = buildRef("Account");
+    const ctx = mockCtx();
+    const list = (ctx.client.dataStreams as unknown as { list: ReturnType<typeof vi.fn> }).list;
+    const get = (ctx.client.dataStreams as unknown as { get: ReturnType<typeof vi.fn> }).get;
+    const create = (ctx.client.dataStreams as unknown as { create: ReturnType<typeof vi.fn> }).create;
+    list.mockResolvedValue({
+      dataStreams: [
+        { name: "Account_Home", recordId: "1dsPqXVAA0", dataLakeObjectInfo: { name: "Account_Home__dll" } },
+      ],
+    });
+    get.mockResolvedValue({ name: "Account_Home", recordId: "1dsPqXVAA0" });
+    const deployed = new Map([
+      [home.uniqueId, { salesforceId: "0hM", apiName: "SalesforceDotCom_Home" }],
+    ]);
+    const out = await ExistingDataStreamResource.create(ctx, stream.resolveProps(deployed)!);
+    expect(out.recordId).toBe("1dsPqXVAA0");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("create throws when no matching pre-existing stream is present", async () => {
+    const { home, stream } = buildRef("Ghost");
+    const ctx = mockCtx();
+    const list = (ctx.client.dataStreams as unknown as { list: ReturnType<typeof vi.fn> }).list;
+    list.mockResolvedValue({ dataStreams: [] });
+    const deployed = new Map([
+      [home.uniqueId, { salesforceId: "0hM", apiName: "SalesforceDotCom_Home" }],
+    ]);
+    await expect(
+      ExistingDataStreamResource.create(ctx, stream.resolveProps(deployed)!),
+    ).rejects.toThrow(/REFERENCES a pre-existing stream/);
+  });
+
+  it("delete is a no-op — the referenced stream and its DLO survive destroy", async () => {
+    const ctx = mockCtx();
+    const del = (ctx.client.dataStreams as unknown as { delete: ReturnType<typeof vi.fn> }).delete;
+    await ExistingDataStreamResource.delete(ctx, "1dsPqXVAA0");
+    expect(del).not.toHaveBeenCalled();
   });
 });

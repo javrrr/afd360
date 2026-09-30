@@ -27,7 +27,12 @@ export type DloCategory = NonNullable<DataObjectInputRepresentation["category"]>
  * SNOWFLAKE (federated — platform introspects the source table schema);
  * M11.2 adds BIGQUERY (also federated, same Direct_Access BYOL family).
  */
-export type DataStreamConnectorType = "IngestApi" | "AwsS3" | "SNOWFLAKE" | "BIGQUERY";
+export type DataStreamConnectorType =
+  | "IngestApi"
+  | "AwsS3"
+  | "SNOWFLAKE"
+  | "BIGQUERY"
+  | "SalesforceHome";
 
 export interface DataStreamPrimaryKey {
   readonly name: string;
@@ -191,6 +196,12 @@ export interface DataStreamProps {
    */
   readonly eventDateTimeFieldName?: string;
   /**
+   * SalesforceHome-only: the source-record audit field used for incremental
+   * change detection. Defaults to "SystemModstamp" (present on every standard
+   * and custom sObject). Override only if the object uses a different field.
+   */
+  readonly recordModifiedFieldName?: string;
+  /**
    * AwsS3-only: where to find the data + column definitions. Required when
    * the parent connection's connectorType is AwsS3; validated at construct time.
    */
@@ -221,6 +232,14 @@ export interface DataStreamOutput {
 export interface DataStreamResourceProps {
   readonly connectorType: DataStreamConnectorType;
   readonly connectionName: string;
+  /**
+   * The parent connection's `dataSource` field, used as the stream's
+   * `datasource` when it differs from the connection dev name (SalesforceHome:
+   * name="SalesforceDotCom_Home" but datasource="Salesforce_Home"). Falls back
+   * to `connectionName` when absent. Resolved from the Connection construct's
+   * `dataSourceName` at deploy time.
+   */
+  readonly datasourceName?: string;
   readonly sourceObject: string;
   readonly name: string;
   readonly label: string;
@@ -229,6 +248,7 @@ export interface DataStreamResourceProps {
   readonly dataSpace: string;
   readonly primaryKey: DataStreamPrimaryKey;
   readonly eventDateTimeFieldName?: string;
+  readonly recordModifiedFieldName?: string;
   readonly s3?: AwsS3StreamAttributes;
   readonly snowflake?: SnowflakeStreamAttributes;
   readonly bigquery?: BigQueryStreamAttributes;
@@ -239,6 +259,7 @@ function buildCreatePayload(p: DataStreamResourceProps): unknown {
   if (p.connectorType === "AwsS3") return buildAwsS3Payload(p);
   if (p.connectorType === "SNOWFLAKE") return buildSnowflakePayload(p);
   if (p.connectorType === "BIGQUERY") return buildBigQueryPayload(p);
+  if (p.connectorType === "SalesforceHome") return buildSalesforceHomePayload(p);
   // Exhaustive check — future connector types land here.
   const _exhaustive: never = p.connectorType;
   throw new Error(`DataStream connectorType "${String(_exhaustive)}" is not supported yet.`);
@@ -268,6 +289,88 @@ function buildIngestApiPayload(p: DataStreamResourceProps): unknown {
       dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
     },
     refreshConfig: { refreshMode: p.refreshMode },
+  };
+}
+
+/**
+ * Default DLO dev name for a same-org CRM (Home) stream: `<Object>_Home__dll`,
+ * with a trailing `__c` stripped from custom objects. Confirmed live on
+ * a live org: standard "Account" → "Account_Home__dll"; custom "P_Region__c" →
+ * "P_Region_Home__dll" (NOT "P_Region__c_Home__dll" — the platform rejects the
+ * un-stripped form's field flattening). The platform also flattens custom DLO
+ * FIELD names (`ExternalId__c` → `ExternalId_c`); that matters for the Mapping
+ * resolver, not the stream create (which only declares the PK).
+ */
+function salesforceHomeDloName(sourceObject: string): string {
+  const base = sourceObject.endsWith("__c")
+    ? sourceObject.slice(0, -"__c".length)
+    : sourceObject;
+  return `${base}_Home__dll`;
+}
+
+/**
+ * Same-org CRM (Home) stream. Reads this org's own Salesforce objects
+ * (standard or custom) into a DLO via the built-in Salesforce_Home connector.
+ *
+ * Confirmed live on a live org () via a throwaway Lead_Home create that
+ * iterated the 400s to a clean success — the platform auto-introspected the
+ * sObject and materialized all 61 columns from a PK-only input. Key shape
+ * facts, several of which differ from the AwsS3 / GET-response intuition:
+ *   - datastreamType: "SFDC" (NOT "CONNECTORSFRAMEWORK" — that's the
+ *     S3/DataConnector path; SFDC keeps its own type and is NOT rewritten to
+ *     DataConnector the way S3 is).
+ *   - connectorInfo.connectorType: "SalesforceDotCom" (POST discriminator ==
+ *     GET echo here; no rewrite).
+ *   - connectorInfo.connectorDetails: { name, sourceObject } — `name` is the
+ *     CONNECTION dev name ("SalesforceDotCom_Home"), and `sourceObject` lives
+ *     HERE, not in advancedAttributes. Emitting connectorDetails.type (which
+ *     the GET echoes) makes the POST 400 with
+ *     `JSON_PARSER_ERROR: Unrecognized field "type"` — same asymmetry class as
+ *     the S3 connectorType echo.
+ *   - datasource: the connection's `dataSource` ("Salesforce_Home") — verbatim,
+ *     NOT the connection dev name and NOT AwsS3_-prefixed.
+ *   - NO advancedAttributes, NO sourceFields, NO mappings — auto-introspection
+ *     is driven purely by the PK in dataLakeFieldInputRepresentations.
+ *   - recordModifiedFieldName lives in dataLakeObjectInfo (default
+ *     "SystemModstamp"), not advancedAttributes.
+ *   - DLO name = `<Object>_Home__dll` (confirmed literally "Lead_Home__dll").
+ *   - refreshConfig: UPSERT + frequency { frequencyType: "BATCH" }.
+ */
+function buildSalesforceHomePayload(p: DataStreamResourceProps): unknown {
+  const dlo: Record<string, unknown> = {
+    label: p.label,
+    // Convention differs from other connectors: <Object>_Home__dll, not
+    // <Object>__dll (and the trailing __c on custom objects is stripped —
+    // see salesforceHomeDloName). Keep in sync with the constructor's this.dlo.
+    name: salesforceHomeDloName(p.sourceObject),
+    category: p.category,
+    dataspaceInfo: [{ name: p.dataSpace }],
+    recordModifiedFieldName: p.recordModifiedFieldName ?? "SystemModstamp",
+    // PK only — the platform derives the rest by introspecting the sObject.
+    dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
+  };
+  if (p.category === "Engagement") {
+    if (!p.eventDateTimeFieldName) {
+      throw new Error(
+        `DataStream "${p.name}": category=Engagement requires eventDateTimeFieldName.`,
+      );
+    }
+    dlo["eventDateTimeFieldName"] = p.eventDateTimeFieldName;
+  }
+  return {
+    name: p.name,
+    label: p.label,
+    // datasource is the connection's dataSource ("Salesforce_Home"), distinct
+    // from connectorDetails.name (the connection dev name). Falls back to the
+    // connection name if a dataSourceName wasn't threaded through.
+    datasource: p.datasourceName ?? p.connectionName,
+    datastreamType: "SFDC",
+    connectorInfo: {
+      connectorType: "SalesforceDotCom",
+      connectorDetails: { name: p.connectionName, sourceObject: p.sourceObject },
+    },
+    dataLakeObjectInfo: dlo,
+    refreshConfig: { refreshMode: p.refreshMode, frequency: { frequencyType: "BATCH" } },
   };
 }
 
@@ -597,9 +700,23 @@ function inferConnectorType(conn: Connection): DataStreamConnectorType {
   // Connection construct and normalize to UPPERCASE here, matching how
   // SNOWFLAKE is plumbed internally.
   if (ct === "BigQuery" || ct === "BIGQUERY") return "BIGQUERY";
+  if (ct === "SalesforceDotCom") {
+    // Same-org CRM (Home): only the REFERENCED built-in connector (via
+    // Connection.fromExisting / Connection.salesforceHome) is supported.
+    // External SalesforceDotCom connections (cross-org OAuth) use a different
+    // create flow afd360 doesn't implement yet.
+    if (conn.isExisting) return "SalesforceHome";
+    throw new Error(
+      `DataStream: connectorType "SalesforceDotCom" is only supported for the ` +
+        `built-in same-org CRM (Home) connector. Reference it with ` +
+        `Connection.salesforceHome(stack) (or Connection.fromExisting), not ` +
+        `a freshly-created Connection. External cross-org SalesforceDotCom ` +
+        `streams are not supported yet.`,
+    );
+  }
   throw new Error(
     `DataStream does not yet support connectorType "${ct}". ` +
-      `Supported: IngestApi, AwsS3, SNOWFLAKE, BigQuery.`,
+      `Supported: IngestApi, AwsS3, SNOWFLAKE, BigQuery, SalesforceHome (same-org CRM).`,
   );
 }
 
@@ -649,7 +766,16 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
         dataLakeObjectInfo?: { name?: string };
       }>;
     }).dataStreams;
-    const wantedDlo = `${props.sourceObject}__dll`;
+    // DLO naming is connector-specific — SalesforceHome uses `<Object>_Home__dll`
+    // (with a trailing __c stripped), NOT `<Object>__dll`. Using the wrong form
+    // here makes adopt-detection miss a pre-existing Home stream (e.g. the
+    // platform-provisioned Account_Home), so the op is misclassified as
+    // `create` and the platform idempotently resolves it to the existing
+    // stream — a diff/reality mismatch. Keep in sync with this.dlo / the builder.
+    const wantedDlo =
+      props.connectorType === "SalesforceHome"
+        ? salesforceHomeDloName(props.sourceObject)
+        : `${props.sourceObject}__dll`;
     const match = streams?.find((s) => {
       if (s.dataLakeObjectInfo?.name === wantedDlo) return true;
       // Fallback: exact name match (handles manifests that provide explicit `name`).
@@ -822,6 +948,68 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
   },
 };
 
+/**
+ * Resource ops for a DataStream afd360 REFERENCES but does not own — built via
+ * {@link DataStream.fromExisting}. The canonical case is a platform-provisioned
+ * same-org CRM (Home) stream (e.g. `Account_Home`, which Data Cloud creates
+ * automatically): the author wants its DLO as a {@link Mapping} source without
+ * afd360 owning — and, critically, without `destroy` deleting — a stream and
+ * DLO it never provisioned.
+ *
+ * Contract vs the owned {@link DataStreamResource}:
+ *  - create: never POSTs. Adopts the pre-existing stream by its DLO name (via
+ *    lookupByProps) so its id/apiName land in state for dependent Mappings.
+ *    Errors loudly if no such stream exists — fromExisting references, it does
+ *    not create.
+ *  - delete: NO-OP. Deleting a referenced stream would also drop its DLO (the
+ *    owned delete cascades the DLO), breaking every Mapping that reads it. This
+ *    is the whole reason the reference lifecycle exists.
+ *  - isFailed / matchesAuthored: never force a recreate — we don't own the
+ *    stream, and a recreate would delete-then-fail (create throws). The
+ *    computeOp ownership gate also holds referenced resources at noop.
+ */
+export const ExistingDataStreamResource: Resource<DataStreamResourceProps, DataStreamOutput> = {
+  type: "DataStream",
+  surface: "connect",
+  idOf: DataStreamResource.idOf,
+  read: DataStreamResource.read,
+  lookupByProps: DataStreamResource.lookupByProps!,
+  isFailed: () => false,
+  matchesAuthored: () => true,
+
+  async create(ctx, props): Promise<DataStreamOutput> {
+    const existing = await DataStreamResource.lookupByProps!(ctx, props);
+    if (!existing) {
+      throw new Error(
+        `DataStream.fromExisting("${props.sourceObject}"): no data stream with DLO ` +
+          `"${props.connectorType === "SalesforceHome" ? salesforceHomeDloName(props.sourceObject) : `${props.sourceObject}__dll`}" ` +
+          `exists under connection "${props.connectionName}". fromExisting REFERENCES a ` +
+          `pre-existing stream (e.g. a platform-provisioned Home stream) — it does not ` +
+          `create one. Verify the source object, or let a normal DataStream create it.`,
+      );
+    }
+    return existing;
+  },
+
+  async update(ctx, salesforceId): Promise<DataStreamOutput> {
+    const live = await DataStreamResource.read(ctx, salesforceId);
+    if (!live) {
+      throw new Error(
+        `DataStream.fromExisting: referenced stream ${salesforceId} vanished from the org.`,
+      );
+    }
+    return live;
+  },
+
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  async delete(): Promise<void> {
+    // Intentionally a no-op — see the resource doc comment. afd360 must never
+    // delete a stream (or its DLO) it only references.
+  },
+
+  hash: DataStreamResource.hash,
+};
+
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 interface DataStreamOpts {
@@ -832,10 +1020,20 @@ interface DataStreamOpts {
    */
   readonly readyIntervalMs?: number;
   readonly readyTimeoutMs?: number;
+  /** Internal: set by {@link DataStream.fromExisting} to swap in the reference lifecycle. */
+  readonly existing?: boolean;
 }
 
 export class DataStream extends Construct {
-  readonly resource = DataStreamResource;
+  readonly resource: Resource<DataStreamResourceProps, DataStreamOutput>;
+  /**
+   * True when this construct only REFERENCES a pre-existing data stream (built
+   * via {@link DataStream.fromExisting}) rather than owning it. Referenced
+   * streams are adopted on deploy and skipped on destroy (their DLO survives so
+   * downstream Mappings keep working). The computeOp ownership gate and destroy
+   * both branch on this.
+   */
+  readonly isExisting: boolean;
   readonly devName: string;
   readonly props: DataStreamResourceProps;
   readonly dependsOn: readonly Construct[];
@@ -849,8 +1047,51 @@ export class DataStream extends Construct {
   readonly readyIntervalMs: number;
   readonly readyTimeoutMs: number;
 
+  /**
+   * Reference a data stream the platform (or a human) already provisioned,
+   * instead of creating one. The canonical case is a platform-provisioned
+   * same-org CRM (Home) stream (e.g. `Account_Home`, auto-created by Data
+   * Cloud): reference it so its DLO can be a {@link Mapping} source, without
+   * afd360 owning it or deleting it (and its DLO) on `destroy`.
+   *
+   * afd360 adopts the stream by its DLO name on deploy (recording id/apiName so
+   * dependent Mappings resolve) and NEVER deletes it on destroy. Pass the same
+   * `connection` (typically {@link Connection.salesforceHome}) and
+   * `sourceObject` you would for an owned stream; the DLO name is derived
+   * identically, so `stream.dlo.name` is a valid Mapping source.
+   */
+  static fromExisting(
+    scope: Stack,
+    id: string,
+    props: {
+      connection: Connection;
+      sourceObject: string;
+      primaryKey?: DataStreamPrimaryKey;
+      category?: DloCategory;
+      label?: string;
+      recordModifiedFieldName?: string;
+    },
+  ): DataStream {
+    const streamProps: DataStreamProps = {
+      connection: props.connection,
+      sourceObject: props.sourceObject,
+      // PK is only used for owned creates; a referenced stream is adopted by
+      // DLO name. Default to "Id" (present on every sObject) so callers
+      // referencing a Home stream needn't restate it.
+      primaryKey: props.primaryKey ?? { name: "Id" },
+      ...(props.category ? { category: props.category } : {}),
+      ...(props.label ? { label: props.label } : {}),
+      ...(props.recordModifiedFieldName
+        ? { recordModifiedFieldName: props.recordModifiedFieldName }
+        : {}),
+    };
+    return new DataStream(scope, id, streamProps, { existing: true });
+  }
+
   constructor(scope: Stack, id: string, props: DataStreamProps, opts: DataStreamOpts = {}) {
     super(scope, id);
+    this.isExisting = opts.existing ?? false;
+    this.resource = this.isExisting ? ExistingDataStreamResource : DataStreamResource;
     this.devName = props.name ?? id;
     const category: DloCategory = props.category ?? "Other";
     // Connector-specific refresh-mode default. Federated BYOL connectors
@@ -966,6 +1207,9 @@ export class DataStream extends Construct {
     if (props.eventDateTimeFieldName) {
       resolvedProps = { ...resolvedProps, eventDateTimeFieldName: props.eventDateTimeFieldName };
     }
+    if (props.recordModifiedFieldName) {
+      resolvedProps = { ...resolvedProps, recordModifiedFieldName: props.recordModifiedFieldName };
+    }
     if (props.s3) {
       resolvedProps = { ...resolvedProps, s3: props.s3 };
     }
@@ -982,7 +1226,15 @@ export class DataStream extends Construct {
     if (props.connection.schema) autoDeps.push(props.connection.schema);
     this.dependsOn = [...autoDeps, ...(opts.dependsOn ?? [])];
 
-    this.dlo = { name: `${props.sourceObject}__dll` };
+    // DLO naming is connector-specific: same-org CRM (Home) streams get
+    // `<Object>_Home__dll` with a trailing `__c` stripped (see
+    // salesforceHomeDloName); everything else `<Object>__dll`.
+    this.dlo = {
+      name:
+        connectorType === "SalesforceHome"
+          ? salesforceHomeDloName(props.sourceObject)
+          : `${props.sourceObject}__dll`,
+    };
     // Defaults: 5 s × 60 attempts = 5 minutes. prior tooling regularly observed
     // streams taking longer than 60 s to reach ACTIVE ("warning: did not
     // activate within 60 s"). 5 min comfortably covers the observed tail
@@ -1005,7 +1257,14 @@ export class DataStream extends Construct {
     }
     const parentRef = deployed.get(conn.uniqueId);
     if (!parentRef) return null;
-    return { ...this.props, connectionName: parentRef.apiName };
+    const resolved: DataStreamResourceProps = { ...this.props, connectionName: parentRef.apiName };
+    // Same-org CRM (Home): the stream's `datasource` is the connection's
+    // dataSource field ("Salesforce_Home"), not its dev name
+    // ("SalesforceDotCom_Home"). The Connection construct carries it.
+    if (conn.dataSourceName !== undefined) {
+      return { ...resolved, datasourceName: conn.dataSourceName };
+    }
+    return resolved;
   }
 }
 /** Re-exported so userland code can name-check schema types in tests. */
