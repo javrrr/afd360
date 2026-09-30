@@ -24,6 +24,7 @@ import {
   type Op,
   type OpKind,
 } from "./ops.js";
+import { executePrune } from "./prune.js";
 import { createInterface } from "node:readline";
 import { pollUntil } from "../core/poll.js";
 import { substituteEnv } from "../core/env.js";
@@ -40,7 +41,22 @@ export function registerDeploy(program: Command): void {
       "--force",
       "proceed without confirmation when a recreate cascades to 2+ downstream resources",
     )
-    .action(async (opts: { config: string; org?: string; force?: boolean }) => {
+    .option(
+      "--prune",
+      "after applying, DELETE owned resources removed from the manifest (orphans)",
+    )
+    .option(
+      "--yes",
+      "skip the prune confirmation prompt (for non-interactive use with --prune)",
+    )
+    .action(
+      async (opts: {
+        config: string;
+        org?: string;
+        force?: boolean;
+        prune?: boolean;
+        yes?: boolean;
+      }) => {
       const app = await loadApp(opts.config);
       if (app.stacks.length !== 1) {
         throw new Error(
@@ -262,19 +278,56 @@ export function registerDeploy(program: Command): void {
         `${pc.bold("done")}  ${summarizeOps(ops)} — ${wrote} write${wrote === 1 ? "" : "s"}; state saved.\n`,
       );
 
-      // Orphan advisory. A plain deploy never deletes an orphan (safe by
-      // default) — it applies the manifest, then warns about state entries
-      // whose construct was removed, pointing at the explicit remedy. Deletion
-      // is a later, opt-in `--prune` phase.
+      // Orphan handling. Orphans are state entries whose construct was removed
+      // from the manifest. Safe by default: a plain deploy NEVER deletes one —
+      // it warns and points at the remedy. `--prune` opts into deleting the
+      // OWNED orphans (afd360 created them) after confirmation; not-owned /
+      // stale orphans are never auto-deleted (that's `forget`'s job).
       const manifestIds = new Set(resources.map((r) => r.uniqueId));
       const orphans = collectOrphans(manifestIds, state);
       if (orphans.length > 0) {
-        process.stderr.write(
-          `\n${pc.yellow("warn")}  ${orphans.length} resource${orphans.length === 1 ? "" : "s"} in state ` +
-            `${orphans.length === 1 ? "is" : "are"} no longer in the manifest (not deleted):\n`,
-        );
-        for (const o of orphans) {
-          process.stderr.write(`        ${o.uniqueId} ${pc.gray(`— ${orphanNote(o.kind)}`)}\n`);
+        const prunable = orphans.filter((o) => o.kind === "prune");
+        if (opts.prune && prunable.length > 0) {
+          process.stdout.write(
+            `\n${pc.red("prune")}  ${prunable.length} owned orphan${prunable.length === 1 ? "" : "s"} ` +
+              `to delete from ${orgAlias}:\n`,
+          );
+          for (const o of prunable) process.stdout.write(`        ${o.uniqueId}\n`);
+          const ok =
+            opts.yes ||
+            (await promptConfirm(
+              `Delete ${prunable.length} owned orphan${prunable.length === 1 ? "" : "s"}? [y/N] `,
+            ));
+          if (ok) {
+            // Own try/finally so a mid-prune failure still persists the deletes
+            // that completed (mirrors the main deploy loop).
+            try {
+              const n = await executePrune(ctx, orphans, state, (line) =>
+                process.stdout.write(pc.red(line) + "\n"),
+              );
+              process.stdout.write(
+                `${pc.bold("done")}  pruned ${n} resource${n === 1 ? "" : "s"}; state saved.\n`,
+              );
+            } finally {
+              await writeState(orgAlias, state);
+            }
+          } else {
+            process.stdout.write(
+              `${pc.bold("skip")}  prune declined; orphans left on the org.\n`,
+            );
+          }
+        }
+        // Re-warn about whatever orphans remain (all of them without --prune;
+        // the not-owned / stale ones after a prune, since prune leaves those).
+        const remaining = collectOrphans(manifestIds, state);
+        if (remaining.length > 0) {
+          process.stderr.write(
+            `\n${pc.yellow("warn")}  ${remaining.length} resource${remaining.length === 1 ? "" : "s"} in state ` +
+              `${remaining.length === 1 ? "is" : "are"} no longer in the manifest (not deleted):\n`,
+          );
+          for (const o of remaining) {
+            process.stderr.write(`        ${o.uniqueId} ${pc.gray(`— ${orphanNote(o.kind)}`)}\n`);
+          }
         }
       }
     });
