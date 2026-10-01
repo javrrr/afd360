@@ -117,6 +117,7 @@ Key facts to internalize:
 | `Relationship` | When two DMOs need a foreign-key relationship (e.g. transactions → accounts). Both DMOs must be mapped first. |
 | `CalculatedInsight` | When the user wants a SQL aggregation over DMOs (counts, rollups, derived metrics). |
 | `SearchIndex` | When the user wants RAG / semantic search over a DMO. Hybrid (vector + keyword) is the default. |
+| `SemanticModel` | When the user wants a Tableau Next semantic model (dimensions / measures / relationships / calculated measurements) over DMOs or CalculatedInsight outputs — the layer a Tableau Next workbook or Agentforce agent queries. |
 
 `docs/resources.md` has the full prop reference for each. Read that
 when you need exact field names or shapes.
@@ -132,6 +133,7 @@ what you generate.
 | "I want to retrieve / search / RAG over data" | Connection → DataStream → DMO → Mapping → SearchIndex |
 | "I want to combine / join data from two DMOs" | (× 2) Connection → DataStream → DMO → Mapping, then Relationship |
 | "I want a metric / aggregation / count over data" | Connection → DataStream → DMO → Mapping → CalculatedInsight |
+| "I want a Tableau Next semantic model / dataset for BI or agents over my data" | Connection → DataStream → DMO → Mapping (→ CalculatedInsight if measures are aggregations), then SemanticModel |
 | "I want to ingest data into Data Cloud" | Connection → DataStream (+ DMO + Mapping if user wants typed DMO surface) |
 | "I want to bring in my org's own CRM data (Account, custom objects, …)" | `Connection.salesforceHome` → DataStream (same-org CRM / Home; no creds) |
 | "I want to set up an X connection" (no further ask) | Connection only |
