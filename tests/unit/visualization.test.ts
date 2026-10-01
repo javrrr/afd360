@@ -168,7 +168,17 @@ describe("VisualizationResource — CRUD wire calls", () => {
     const spec = body.body["visualSpecification"] as Record<string, unknown>;
     expect(spec["columns"]).toEqual(["F3"]);
     expect(spec["rows"]).toEqual(["F2"]);
-    expect(spec["marks"]).toEqual({ panes: [{ type: "Bar" }] });
+    // marks.panes is a SINGLE object (not an array); chart type is panes.type,
+    // with a parallel headers object. (b8 live v67.0 capture, 2026-10-01.)
+    const marks = spec["marks"] as Record<string, Record<string, unknown>>;
+    expect(marks["panes"]!["type"]).toBe("Bar");
+    expect(Array.isArray(marks["panes"])).toBe(false);
+    expect(marks["headers"]!["type"]).toBe("Text");
+
+    // view is a populated viewSpecification scaffold, not {}.
+    const view = body.body["view"] as Record<string, unknown>;
+    expect(view["name"]).toBe("Chart_default");
+    expect(view["viewSpecification"]).toBeDefined();
   });
 
   it("falls back to name-only dataSource when the model GET surfaces no id", async () => {

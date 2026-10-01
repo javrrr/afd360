@@ -28,11 +28,15 @@ import type { SemanticModel } from "./semantic-model.js";
  * by slot id (`F2`, `F3`, …), and `objectName`/`fieldName` take the SEMANTIC
  * apiNames (e.g. `WinRatePct`), NOT the DMO/CIO dev names (`WinRatePct__c`).
  *
- * LIVE-VERIFY (flagged for a live org's end-to-end run of the construct): the
- * `dataSource.id` resolution (we GET the model to read its record id), the
- * `visualSpecification.marks.panes` shape, and the `view` default. All three
- * are overridable via `visualSpecification` / `view` raw props so a power user
- * can supply an exact captured body if a default drifts.
+ * All three originally-guessed shapes are now CONFIRMED against a live v67.0
+ * capture (a live org, 2026-10-01): `dataSource.id` is the model GET's `.id`
+ * (2SM record id — resolved + sent; name-only binding remains unverified so we
+ * always resolve the id), `visualSpecification.marks.panes` is a SINGLE object
+ * (not an array) with a parallel `marks.headers`, and `view` carries a populated
+ * viewSpecification scaffold (not `{}`). All remain overridable via
+ * `visualSpecification` / `view` raw props so a power user can supply an exact
+ * captured body if a future version drifts (the viz surface is v67; we GET the
+ * model at v64, so shapes can diverge across versions).
  */
 
 /** API version the `/tableau/` surface is gated to. v64/v65 → DOWNGRADE_VERSION_ERROR. */
@@ -82,7 +86,7 @@ export interface VisualizationProps {
    * dependsOn + supplies the apiName) or a raw model apiName string. */
   readonly model: SemanticModel | string;
   readonly workspace: VisualizationWorkspace;
-  /** Chart type → `visualSpecification.marks.panes[].type`. Default `Bar`. */
+  /** Chart type → `visualSpecification.marks.panes.type`. Default `Bar`. */
   readonly chartType?: string;
   /** Fields placed on the viz; the construct assigns slot ids in array order. */
   readonly fields: ReadonlyArray<VizField>;
@@ -160,8 +164,29 @@ function buildFieldsObject(fields: ReadonlyArray<ResolvedField>): Record<string,
   return obj;
 }
 
+/** `marks` scaffold — chart type is `marks.panes.type` (panes is a SINGLE
+ * OBJECT, NOT an array), with a parallel `marks.headers` object. Shape
+ * confirmed live by a live org (v67.0 capture, 2026-10-01). */
+function buildMarks(chartType: string): Record<string, unknown> {
+  return {
+    fields: {},
+    headers: {
+      encodings: [],
+      isAutomatic: true,
+      stack: { isAutomatic: true, isStacked: false },
+      type: "Text",
+    },
+    panes: {
+      encodings: [],
+      isAutomatic: false,
+      stack: { isAutomatic: true, isStacked: true },
+      type: chartType,
+    },
+  };
+}
+
 /** Generated `visualSpecification` — columns/rows are slot-id arrays, the chart
- * is picked by `marks.panes[].type`, and `style` is left empty (render
+ * is picked by `marks.panes.type`, and `style` is left empty (render
  * boilerplate the platform fills). Overridden wholesale by `props.visualSpecification`. */
 function buildVisualSpecification(p: VisualizationResourceProps): Record<string, unknown> {
   if (p.visualSpecification) return p.visualSpecification;
@@ -170,8 +195,30 @@ function buildVisualSpecification(p: VisualizationResourceProps): Record<string,
   return {
     columns,
     rows,
-    marks: { panes: [{ type: p.chartType }] },
+    marks: buildMarks(p.chartType),
     style: {},
+  };
+}
+
+/** Default `view` scaffold — a populated viewSpecification (NOT `{}`); the
+ * server-managed `id`/`isOriginal` are never emitted and `name`/`label` are
+ * freshly set. Shape confirmed live by a live org (v67.0 capture, 2026-10-01).
+ * Overridden wholesale by `props.view`. */
+function buildView(p: VisualizationResourceProps): Record<string, unknown> {
+  if (p.view) return p.view;
+  return {
+    label: "default",
+    name: `${p.name}_default`,
+    viewSpecification: {
+      filter: { filters: [] },
+      sortOrders: { columns: [], fields: {}, rows: [] },
+      style: {
+        headers: {
+          columns: { sizing: { fieldHeight: {} } },
+          rows: { sizing: { fieldWidth: {} } },
+        },
+      },
+    },
   };
 }
 
@@ -195,7 +242,7 @@ function buildCreateBody(p: VisualizationResourceProps, modelId: string | undefi
     workspace,
     fields: buildFieldsObject(p.fields),
     visualSpecification: buildVisualSpecification(p),
-    view: p.view ?? {},
+    view: buildView(p),
     interactions: [], // required ARRAY, may be empty
   };
 }
