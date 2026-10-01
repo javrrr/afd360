@@ -370,6 +370,14 @@ delete-and-recreate (same policy as every other resource).
   must equal the CI output field's native type.
 - **tableType** is `Standard` (NOT "Full"); **sentiment** accepts only
   `SentimentTypeUpIsGood` today.
+- **Relationship joinType is `Auto`-only.** A base-model relationship must use
+  `joinType: "Auto"` (the default) — explicit `Left`/`Inner` 400 ("must have
+  the 'AUTO' join type ... explicit join types are only permitted ... within
+  logical views", live v64). afd360 fast-fails anything but `Auto` at construct
+  time. **LEFT-JOIN semantics** (retain unmatched rows, e.g. zero-service
+  assets) can't be pinned at model level — model them as a conditional-
+  aggregation `calculatedMeasurement` instead. True explicit joins would need
+  logical-view relationships, not yet an afd360 construct.
 - **Prune ordering:** a model HARD-BLOCKS deletion of the CIs/DMOs it
   references (platform 400 `DELETE_FAILED`), so it is slotted ahead of
   `CalculatedInsight` + `DMO` in `PRUNE_TYPE_PRIORITY` and torn down first.

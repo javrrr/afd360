@@ -184,7 +184,13 @@ export interface SemanticRelationshipProps {
   readonly rightSemanticDefinitionApiName: string;
   readonly criteria: ReadonlyArray<SemanticRelationshipCriterion>;
   readonly isEnabled?: boolean;
-  /** `Auto` (default). */
+  /**
+   * `Auto` (default) — and the ONLY value a base-model relationship accepts.
+   * Explicit join types (`Left`/`Inner`) are rejected by the server for model
+   * relationships (allowed only inside logical views, which afd360 doesn't yet
+   * build), so afd360 fast-fails anything but `Auto`. For LEFT-JOIN semantics
+   * (retain unmatched rows), use a conditional-aggregation calculatedMeasurement.
+   */
   readonly joinType?: string;
 }
 
@@ -620,7 +626,9 @@ export class SemanticModel extends Construct {
       };
     });
 
-    const relationships: ResolvedRelationship[] = (props.relationships ?? []).map((r) => ({
+    const relationships: ResolvedRelationship[] = (props.relationships ?? []).map((r) => {
+      assertModelJoinType(this.apiName, r.apiName, r.joinType);
+      return {
       apiName: r.apiName,
       label: r.label ?? r.apiName,
       cardinality: r.cardinality,
@@ -635,7 +643,8 @@ export class SemanticModel extends Construct {
         rightFieldType: c.rightFieldType ?? "TableField",
         rightSemanticFieldApiName: c.rightSemanticFieldApiName,
       })),
-    }));
+      };
+    });
 
     const calculatedMeasurements: ResolvedCalcMeasurement[] = (
       props.calculatedMeasurements ?? []
@@ -793,6 +802,27 @@ function resolveMeasure(m: SemanticMeasure): ResolvedMeasure {
     sentiment: m.sentiment ?? "SentimentTypeUpIsGood",
     shouldTreatNullsAsZeros: m.shouldTreatNullsAsZeros ?? false,
   };
+}
+
+/**
+ * A base-model relationship MUST be `joinType: "Auto"`. Explicit join types
+ * (`Left`/`Inner`/…) 400 with "Relationship ... in model must have the 'AUTO'
+ * join type. Explicit join types are only permitted for relationships within
+ * logical views." (live-verified v64, a live org). afd360 only builds base-model
+ * relationships today, so fast-fail anything else rather than let it reach the
+ * server as an opaque 400. Explicit LEFT/INNER semantics need a logical view —
+ * not yet an afd360 construct.
+ */
+function assertModelJoinType(model: string, rel: string, joinType: string | undefined): void {
+  if (joinType !== undefined && joinType.toLowerCase() !== "auto") {
+    throw new Error(
+      `SemanticModel "${model}" relationship "${rel}": joinType "${joinType}" is invalid — a ` +
+        `base-model relationship must be "Auto" (the server 400s "must have the 'AUTO' join ` +
+        `type"). Explicit join types (Left/Inner) are only allowed inside logical views, which ` +
+        `afd360 does not yet build. To retain unmatched rows (a LEFT JOIN), model it as a ` +
+        `conditional-aggregation calculatedMeasurement instead.`,
+    );
+  }
 }
 
 /**
