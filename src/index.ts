@@ -65,3 +65,16 @@ export type {
   VectorEmbeddingConfig,
   ConfigBlock,
 } from "./resources/search-index.js";
+export { SemanticModel } from "./resources/semantic-model.js";
+export type {
+  SemanticModelProps,
+  SemanticModelOutput,
+  SemanticDataObjectProps,
+  SemanticDataObjectType,
+  SemanticDimension,
+  SemanticMeasure,
+  SemanticRelationshipProps,
+  SemanticRelationshipCriterion,
+  SemanticCalculatedMeasurementProps,
+  SemanticCardinality,
+} from "./resources/semantic-model.js";

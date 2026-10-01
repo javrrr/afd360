@@ -7,6 +7,7 @@ import { MappingResource } from "./mapping.js";
 import { RelationshipResource } from "./relationship.js";
 import { CalculatedInsightResource } from "./calculated-insight.js";
 import { SearchIndexResource } from "./search-index.js";
+import { SemanticModelResource } from "./semantic-model.js";
 
 /**
  * Static `resource.type` → `Resource` map.
@@ -35,6 +36,7 @@ export const RESOURCE_REGISTRY: Record<string, Resource<never, never>> = {
   Relationship: RelationshipResource as Resource<never, never>,
   CalculatedInsight: CalculatedInsightResource as Resource<never, never>,
   SearchIndex: SearchIndexResource as Resource<never, never>,
+  SemanticModel: SemanticModelResource as Resource<never, never>,
 };
 
 /**
@@ -49,6 +51,10 @@ export const PRUNE_TYPE_PRIORITY: readonly string[] = [
   "Mapping",
   "Relationship",
   "SearchIndex",
+  // SemanticModel before CalculatedInsight + DMO: a model HARD-BLOCKS deletion
+  // of the CIs/DMOs it references (platform 400 DELETE_FAILED), so it must be
+  // torn down first.
+  "SemanticModel",
   "CalculatedInsight",
   "DMO",
   "DataStream",
