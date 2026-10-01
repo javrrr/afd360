@@ -1,0 +1,412 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { App, Stack } from "../../src/core/app.js";
+import { DMO } from "../../src/resources/dmo.js";
+import { Connection } from "../../src/resources/connection.js";
+import { DataStream } from "../../src/resources/data-stream.js";
+import { Mapping } from "../../src/resources/mapping.js";
+import { CalculatedInsight } from "../../src/resources/calculated-insight.js";
+import type { ResourceContext } from "../../src/core/construct.js";
+
+// connectRequest is the raw-REST seam; mock it so resource CRUD tests assert
+// the wire calls without touching an org. Hoisted so the vi.mock factory can
+// reference it.
+const { connectRequest } = vi.hoisted(() => ({ connectRequest: vi.fn() }));
+vi.mock("../../src/client/rest.js", () => ({ connectRequest }));
+
+// Import AFTER the mock is registered.
+const { SemanticModel, SemanticModelResource } = await import(
+  "../../src/resources/semantic-model.js"
+);
+const { RESOURCE_REGISTRY, PRUNE_TYPE_PRIORITY, pruneTypeRank } = await import(
+  "../../src/resources/registry.js"
+);
+
+function stackWith(): { stack: Stack; dmo: DMO } {
+  const app = new App();
+  const stack = new Stack(app, "S", { targetOrg: "x" });
+  const dmo = new DMO(stack, "Fact", {
+    fields: [
+      { name: "Id", dataType: "Text", isPrimaryKey: true },
+      { name: "Amount", dataType: "Currency" },
+    ],
+  });
+  return { stack, dmo };
+}
+
+function ctx(): ResourceContext {
+  return {
+    client: {} as unknown as ResourceContext["client"],
+    session: {
+      alias: "o", username: "u", orgId: "00D",
+      instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+    },
+    orgAlias: "o",
+  };
+}
+
+describe("SemanticModel construct — source resolution", () => {
+  it("infers dataObjectName + Dmo type from a DMO construct and wires the dep", () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        {
+          apiName: "Fact",
+          source: dmo,
+          dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text", isPrimaryKey: true }],
+        },
+      ],
+    });
+    const dob = sm.props.dataObjects[0]!;
+    expect(dob.dataObjectName).toBe("Fact__dlm");
+    expect(dob.dataObjectType).toBe("Dmo");
+    expect(sm.dependsOn).toContain(dmo);
+  });
+
+  it("infers dataObjectName + Cio type from a CalculatedInsight construct", () => {
+    const { stack } = stackWith();
+    const ci = new CalculatedInsight(stack, "MyCI", { expression: "SELECT 1" });
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        {
+          apiName: "Metric",
+          source: ci,
+          dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+        },
+      ],
+    });
+    const dob = sm.props.dataObjects[0]!;
+    expect(dob.dataObjectName).toBe("MyCI__cio");
+    expect(dob.dataObjectType).toBe("Cio");
+    expect(sm.dependsOn).toContain(ci);
+  });
+
+  it("requires dataObjectType when source is a raw string", () => {
+    const { stack } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Std",
+              source: "ssot__Account__dlm",
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "ssot__Id__c", dataType: "Text" }],
+            },
+          ],
+        }),
+    ).toThrow(/dataObjectType is required when source is a string/);
+  });
+
+  it("accepts a string source when dataObjectType is given", () => {
+    const { stack } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        {
+          apiName: "Std",
+          source: "ssot__Account__dlm",
+          dataObjectType: "Dmo",
+          dimensions: [{ apiName: "Id", dataObjectFieldName: "ssot__Id__c", dataType: "Text" }],
+        },
+      ],
+    });
+    expect(sm.props.dataObjects[0]!.dataObjectName).toBe("ssot__Account__dlm");
+  });
+});
+
+describe("SemanticModel construct — defaults", () => {
+  it("applies shell + dimension + measure defaults", () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        {
+          apiName: "Fact",
+          source: dmo,
+          dimensions: [
+            { apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text", isPrimaryKey: true },
+            {
+              apiName: "Cur",
+              dataObjectFieldName: "cdp_sys_record_currency__c",
+              dataType: "Text",
+              semanticDataType: "RecordCurrency",
+            },
+          ],
+          measures: [{ apiName: "Amt", dataObjectFieldName: "Amount__c", dataType: "Currency" }],
+        },
+      ],
+    });
+    expect(sm.apiName).toBe("Model");
+    expect(sm.props.dataSpace).toBe("default");
+    expect(sm.props.sourceCreation).toBe("DataCloud");
+    expect(sm.props.currency).toEqual({ useOrgDefault: true });
+    expect(sm.props.queryUnrelatedDataObjects).toBe("Union");
+    expect(sm.props.agentEnabled).toBe(false);
+
+    const dim = sm.props.dataObjects[0]!.dimensions[0]!;
+    expect(dim.displayCategory).toBe("Discrete");
+    expect(dim.isVisible).toBe(true);
+    expect(dim.sortOrder).toBe("Ascending");
+    expect(dim.storageDataType).toBe("Text");
+
+    const m = sm.props.dataObjects[0]!.measures[0]!;
+    expect(m.aggregationType).toBe("UserAgg");
+    expect(m.displayCategory).toBe("Continuous");
+    expect(m.decimalPlace).toBe(2);
+    expect(m.sentiment).toBe("SentimentTypeUpIsGood");
+    expect(m.storageDataType).toBe("Currency");
+  });
+
+  it("fills relationship criterion defaults (Equals / TableField / Auto)", () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+      relationships: [
+        {
+          apiName: "R",
+          cardinality: "OneToMany",
+          leftSemanticDefinitionApiName: "Spine",
+          rightSemanticDefinitionApiName: "Fact",
+          criteria: [{ leftSemanticFieldApiName: "Id", rightSemanticFieldApiName: "AccountId" }],
+        },
+      ],
+    });
+    const rel = sm.props.relationships[0]!;
+    expect(rel.joinType).toBe("Auto");
+    expect(rel.isEnabled).toBe(true);
+    expect(rel.criteria[0]).toEqual({
+      joinOperator: "Equals",
+      leftFieldType: "TableField",
+      leftSemanticFieldApiName: "Id",
+      rightFieldType: "TableField",
+      rightSemanticFieldApiName: "AccountId",
+    });
+  });
+});
+
+describe("SemanticModel construct — calculated measurements", () => {
+  function buildWith(cm: Record<string, unknown>) {
+    const { stack, dmo } = stackWith();
+    return new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+      calculatedMeasurements: [cm as never],
+    });
+  }
+
+  it("aggregate flavor fills level + totalAggregationType", () => {
+    const sm = buildWith({ apiName: "Cnt", expression: "count([Fact])", aggregationType: "UserAgg" });
+    const cm = sm.props.calculatedMeasurements[0]!;
+    expect(cm.aggregationType).toBe("UserAgg");
+    expect(cm.level).toBe("AggregateFunction");
+    expect(cm.totalAggregationType).toBe("Sum");
+  });
+
+  it("row-level flavor omits aggregationType / level / totalAggregationType", () => {
+    const sm = buildWith({ apiName: "Derived", expression: "[Fact.A] + [Fact.B]" });
+    const cm = sm.props.calculatedMeasurements[0]!;
+    expect(cm.aggregationType).toBeUndefined();
+    expect(cm.level).toBeUndefined();
+    expect(cm.totalAggregationType).toBeUndefined();
+  });
+});
+
+describe("SemanticModel construct — measure guards", () => {
+  it("rejects a Percent measure", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [{ apiName: "Pct", dataObjectFieldName: "Pct__c", dataType: "Percent" }],
+            },
+          ],
+        }),
+    ).toThrow(/dataType "Percent", which the semantic layer rejects/);
+  });
+
+  it("rejects a Currency measure without a RecordCurrency sibling dimension", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [{ apiName: "Amt", dataObjectFieldName: "Amount__c", dataType: "Currency" }],
+            },
+          ],
+        }),
+    ).toThrow(/requires a sibling dimension flagged semanticDataType: "RecordCurrency"/);
+  });
+
+  it("accepts a Currency measure when a RecordCurrency dimension is present", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [
+                { apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" },
+                {
+                  apiName: "Cur",
+                  dataObjectFieldName: "cdp_sys_record_currency__c",
+                  dataType: "Text",
+                  semanticDataType: "RecordCurrency",
+                },
+              ],
+              measures: [{ apiName: "Amt", dataObjectFieldName: "Amount__c", dataType: "Currency" }],
+            },
+          ],
+        }),
+    ).not.toThrow();
+  });
+});
+
+describe("SemanticModel construct — reciprocal Mapping wiring", () => {
+  function ragStack(order: "mapping-first" | "model-first") {
+    const app = new App();
+    const stack = new Stack(app, "S", { targetOrg: "x" });
+    const conn = new Connection(stack, "Conn", {
+      connectorType: "IngestApi",
+      label: "Conn",
+      schema: { name: "KB", label: "KB", fields: [{ name: "Id", dataType: "Text" }] },
+    });
+    const stream = new DataStream(stack, "Stream", {
+      connection: conn,
+      sourceObject: "KB",
+      primaryKey: { name: "Id" },
+    });
+    const dmo = new DMO(stack, "Fact", {
+      fields: [{ name: "Id", dataType: "Text", isPrimaryKey: true }],
+    });
+    const makeModel = () =>
+      new SemanticModel(stack, "Model", {
+        dataObjects: [
+          { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+        ],
+      });
+    const makeMapping = () =>
+      new Mapping(stack, "Map", {
+        source: stream,
+        target: dmo,
+        fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+      });
+    if (order === "mapping-first") {
+      const mapping = makeMapping();
+      const model = makeModel();
+      return { mapping, model };
+    }
+    const model = makeModel();
+    const mapping = makeMapping();
+    return { mapping, model };
+  }
+
+  it("wires Mapping → SemanticModel when the Mapping is authored first", () => {
+    const { mapping, model } = ragStack("mapping-first");
+    expect(model.dependsOn).toContain(mapping);
+  });
+
+  it("wires Mapping → SemanticModel when the model is authored first (reciprocal)", () => {
+    const { mapping, model } = ragStack("model-first");
+    expect(model.dependsOn).toContain(mapping);
+  });
+});
+
+describe("SemanticModelResource — CRUD wire calls", () => {
+  // NB block body — `mockReset()` returns the mock (a function); an arrow that
+  // returned it would make vitest treat the mock as a teardown cleanup hook and
+  // invoke `connectRequest()` with no args during callCleanupHooks.
+  beforeEach(() => {
+    connectRequest.mockReset();
+  });
+
+  function resolvedProps() {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        {
+          apiName: "Fact",
+          source: dmo,
+          dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text", isPrimaryKey: true }],
+        },
+      ],
+      relationships: [
+        {
+          apiName: "R",
+          cardinality: "OneToMany",
+          leftSemanticDefinitionApiName: "Spine",
+          rightSemanticDefinitionApiName: "Fact",
+          criteria: [{ leftSemanticFieldApiName: "Id", rightSemanticFieldApiName: "AccountId" }],
+        },
+      ],
+      calculatedMeasurements: [{ apiName: "Cnt", expression: "count([Fact])", aggregationType: "UserAgg" }],
+    });
+    return sm.props;
+  }
+
+  it("issues shell → data-objects → relationships → calculated-measurements in order, then reads", async () => {
+    connectRequest.mockImplementation(async (_session: unknown, opts: { method: string }) =>
+      opts.method === "GET" ? { apiName: "Model", label: "Model", isQueryable: "Queryable" } : {},
+    );
+    const out = await SemanticModelResource.create(ctx(), resolvedProps());
+    expect(out.apiName).toBe("Model");
+
+    const calls = connectRequest.mock.calls.map((c) => ({
+      method: (c[1] as { method: string }).method,
+      path: (c[1] as { path: string }).path,
+      apiVersion: (c[1] as { apiVersion?: string }).apiVersion,
+    }));
+    expect(calls).toEqual([
+      { method: "POST", path: "/ssot/semantic/models", apiVersion: "64.0" },
+      { method: "POST", path: "/ssot/semantic/models/Model/data-objects", apiVersion: "64.0" },
+      { method: "POST", path: "/ssot/semantic/models/Model/relationships", apiVersion: "64.0" },
+      { method: "POST", path: "/ssot/semantic/models/Model/calculated-measurements", apiVersion: "64.0" },
+      { method: "GET", path: "/ssot/semantic/models/Model", apiVersion: "64.0" },
+    ]);
+  });
+
+  it("sends the shell body with sourceCreation + currency + agentEnabled", async () => {
+    connectRequest.mockImplementation(async (_s: unknown, opts: { method: string }) =>
+      opts.method === "GET" ? { apiName: "Model" } : {},
+    );
+    await SemanticModelResource.create(ctx(), resolvedProps());
+    const shell = connectRequest.mock.calls[0]![1] as { body: Record<string, unknown> };
+    expect(shell.body).toMatchObject({
+      apiName: "Model",
+      dataspace: "default",
+      sourceCreation: "DataCloud",
+      currency: { useOrgDefault: true },
+      queryUnrelatedDataObjects: "Union",
+      agentEnabled: false,
+    });
+  });
+
+  it("delete swallows a 404 as idempotent success", async () => {
+    connectRequest.mockRejectedValue({ status: 404, body: { message: "not found" } });
+    await expect(SemanticModelResource.delete(ctx(), "Gone")).resolves.toBeUndefined();
+  });
+
+  it("read returns null when the model does not exist", async () => {
+    connectRequest.mockRejectedValue({ status: 404, body: {} });
+    await expect(SemanticModelResource.read(ctx(), "Missing")).resolves.toBeNull();
+  });
+});
+
+describe("SemanticModel prune registry", () => {
+  it("is registered and sorts for delete before CalculatedInsight and DMO", () => {
+    expect(RESOURCE_REGISTRY["SemanticModel"]).toBe(SemanticModelResource);
+    expect(pruneTypeRank("SemanticModel")).toBeLessThan(pruneTypeRank("CalculatedInsight"));
+    expect(pruneTypeRank("SemanticModel")).toBeLessThan(pruneTypeRank("DMO"));
+    expect(PRUNE_TYPE_PRIORITY).toContain("SemanticModel");
+  });
+});

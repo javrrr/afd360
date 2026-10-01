@@ -9,6 +9,7 @@ import { DMO } from "./dmo.js";
 import { attachMappingToSearchIndexes } from "./search-index.js";
 import { attachMappingToRelationships } from "./relationship.js";
 import { attachMappingToCalculatedInsights } from "./calculated-insight.js";
+import { attachMappingToSemanticModels } from "./semantic-model.js";
 
 /**
  * A DLO-field → DMO-field pair. Platform uses `__c` suffix on both sides.
@@ -423,6 +424,10 @@ export class Mapping extends Construct {
     // run the CI before any mapping exists → 500 ENTITY_SAVE_ERROR
     // "Error getting FactTable …__dlm" and the whole deploy aborts.
     attachMappingToCalculatedInsights(scope, this);
+    // Same reciprocal wiring for SemanticModels. A model over a DMO reads its
+    // FACT TABLE, which only materializes after this Mapping runs — so any
+    // model referencing this Mapping's target DMO must deploy after it.
+    attachMappingToSemanticModels(scope, this);
   }
 
   /**
