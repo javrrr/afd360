@@ -40,6 +40,23 @@ export type SemanticDataObjectType = "Cio" | "Dmo";
 export type SemanticCardinality = "OneToOne" | "OneToMany";
 
 /**
+ * A row-level filter on a semantic data object, or a filter on a calculated
+ * measurement. This is the native semantic-layer equivalent of a CI's
+ * `WHERE …` clause (e.g. `Status IN ('Won','Lost')`): it restricts the rows a
+ * data object contributes before measures aggregate.
+ *
+ * The exact `/ssot/semantic/models` filter grammar is NOT carried by
+ * data-360-sdk (there is no first-class semantic-model service) and is being
+ * confirmed firsthand against a live Data 360 org. Until it is pinned from a
+ * live capture, afd360 forwards each filter object **verbatim** to the wire —
+ * the same pass-through contract as a calculated-measurement `expression`
+ * string: afd360 does not validate the grammar, the platform does. Author the
+ * shape the live endpoint accepts; this type will be tightened to a named
+ * shape once a live response confirms it.
+ */
+export type SemanticFilter = Readonly<Record<string, unknown>>;
+
+/**
  * One business dimension on a data object. `apiName` is the semantic name a
  * viz/relationship references (e.g. `AccountId`); `dataObjectFieldName` is the
  * underlying `__c` column it projects.
@@ -117,6 +134,12 @@ export interface SemanticDataObjectProps {
   readonly shouldIncludeAllFields?: boolean;
   readonly dimensions: ReadonlyArray<SemanticDimension>;
   readonly measures?: ReadonlyArray<SemanticMeasure>;
+  /**
+   * Row-level filters restricting the rows this data object contributes (the
+   * native equivalent of a CI's `WHERE`). Forwarded verbatim; see
+   * {@link SemanticFilter}. Omit (or `[]`) for no filter — the wire default.
+   */
+  readonly filters?: ReadonlyArray<SemanticFilter>;
 }
 
 export interface SemanticRelationshipCriterion {
@@ -168,6 +191,11 @@ export interface SemanticCalculatedMeasurementProps {
   readonly aggregationType?: string;
   readonly level?: string;
   readonly totalAggregationType?: string;
+  /**
+   * Filters scoping this calculated measurement. Forwarded verbatim; see
+   * {@link SemanticFilter}. Omit (or `[]`) for none — the wire default.
+   */
+  readonly filters?: ReadonlyArray<SemanticFilter>;
 }
 
 export interface SemanticModelProps {
@@ -229,6 +257,9 @@ interface ResolvedDataObject {
   readonly shouldIncludeAllFields: boolean;
   readonly dimensions: ReadonlyArray<ResolvedDimension>;
   readonly measures: ReadonlyArray<ResolvedMeasure>;
+  /** Undefined when the author supplied none — keeps the hash + wire bytes
+   * identical to pre-filters manifests (hashProps drops undefined keys). */
+  readonly filters?: ReadonlyArray<SemanticFilter>;
 }
 
 interface ResolvedCriterion {
@@ -264,6 +295,8 @@ interface ResolvedCalcMeasurement {
   readonly aggregationType?: string;
   readonly level?: string;
   readonly totalAggregationType?: string;
+  /** Undefined when none supplied — hash/wire-identical to pre-filters manifests. */
+  readonly filters?: ReadonlyArray<SemanticFilter>;
 }
 
 export interface SemanticModelResourceProps {
@@ -322,7 +355,7 @@ function buildDataObjectBody(d: ResolvedDataObject): unknown {
     dataObjectType: d.dataObjectType,
     tableType: d.tableType,
     shouldIncludeAllFields: d.shouldIncludeAllFields,
-    filters: [],
+    filters: d.filters ?? [],
     semanticDimensions: d.dimensions.map((dim) => ({
       apiName: dim.apiName,
       dataObjectFieldName: dim.dataObjectFieldName,
@@ -386,7 +419,7 @@ function buildCalcMeasurementBody(cm: ResolvedCalcMeasurement): unknown {
     semanticDataType: cm.semanticDataType,
     sentiment: cm.sentiment,
     isVisible: cm.isVisible,
-    filters: [],
+    filters: cm.filters ?? [],
     expression: cm.expression,
   };
   // Aggregate flavor only — a row-level field MUST omit these three.
@@ -524,6 +557,11 @@ export class SemanticModel extends Construct {
       const measures = (dob.measures ?? []).map(resolveMeasure);
       validateMeasures(this.apiName, dob.apiName, dimensions, measures);
 
+      // Normalize omitted/[] to undefined and omit the key entirely so it hashes
+      // identically to a pre-filters manifest (no spurious recreate); the wire
+      // still emits []. The key is absent (not `filters: undefined`) to satisfy
+      // exactOptionalPropertyTypes.
+      const filters = normalizeFilters(dob.filters);
       return {
         apiName: dob.apiName,
         label: dob.label ?? dob.apiName,
@@ -533,6 +571,7 @@ export class SemanticModel extends Construct {
         shouldIncludeAllFields: dob.shouldIncludeAllFields ?? false,
         dimensions,
         measures,
+        ...(filters ? { filters } : {}),
       };
     });
 
@@ -568,6 +607,8 @@ export class SemanticModel extends Construct {
         sentiment: cm.sentiment ?? "SentimentTypeUpIsGood",
         isVisible: cm.isVisible ?? true,
       };
+      const cmFilters = normalizeFilters(cm.filters);
+      if (cmFilters) base.filters = cmFilters;
       // Aggregate flavor iff aggregationType is supplied; row-level omits all three.
       if (cm.aggregationType !== undefined) {
         base.aggregationType = cm.aggregationType;
@@ -656,6 +697,18 @@ function resolveSource(modelApiName: string, dob: SemanticDataObjectProps): Reso
     `SemanticModel "${modelApiName}" data object "${dob.apiName}": source must be a DMO ` +
       `construct, a CalculatedInsight construct, or a dataObjectName string.`,
   );
+}
+
+/**
+ * Normalize an authored filter list: an omitted or empty list resolves to
+ * `undefined` so it is dropped from the hash (hashProps drops undefined keys)
+ * and the resolved props hash identically to a manifest authored before the
+ * `filters` prop existed. A non-empty list passes through verbatim.
+ */
+function normalizeFilters(
+  filters: ReadonlyArray<SemanticFilter> | undefined,
+): ReadonlyArray<SemanticFilter> | undefined {
+  return filters && filters.length > 0 ? filters : undefined;
 }
 
 function resolveDimension(d: SemanticDimension): ResolvedDimension {
