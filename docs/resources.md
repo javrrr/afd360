@@ -462,8 +462,15 @@ as id; delete swallows 404 / 400 "was not found".
 When `afd360 deploy` processes a resource it picks one op per entry:
 
 - **create** — no state entry, no live resource. Issues the create.
-- **adopt** — no state entry, live resource found via `lookupByProps`.
-  Writes state only; no API write for the resource itself.
+- **adopt** — no state entry, live resource found via `lookupByProps`
+  (and `matchesAuthored`, if the resource defines it). Writes state only;
+  no API write for the resource itself. Adopted resources are recorded
+  **not-owned** (`owned: false`), so `destroy` and `deploy --prune` skip
+  them — afd360 only deletes what it created. This is a construct-generic
+  safety property: any resource implementing `lookupByProps` (every
+  construct does) can be brought under management by pointing a manifest
+  at a pre-existing, hand-built resource and deploying — the first deploy
+  adopts it in place rather than recreating it.
 - **noop** — state hash matches the authored hash. Zero API writes.
 - **recreate** — state hash differs, OR the live resource is in a
   terminal-failed state (`isFailed` returns true). Deletes then creates.
