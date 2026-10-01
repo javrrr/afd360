@@ -190,9 +190,20 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
  * Resolve the real DLO developer name for a stream's source object.
  *
  * afd360 derives `${sourceObject}__dll`, which is correct for S3/Snowflake streams. But an
- * **IngestApi** stream's DLO is named `PR_<stream>_<object>_<hash>__dll` by the platform, so
- * the derived name doesn't exist. Fast path: if the derived name resolves, use it. Fallback:
- * list DLOs and match the one that ends in `__dll` and contains the object token.
+ * **IngestApi** stream's DLO is named `<stream>_<object>_<hash>__dll` by the platform (with a
+ * sibling `PR_<stream>_<object>_<hash>__dll` profile DLO), so the derived name doesn't exist.
+ * Fast path: if the derived name resolves, use it. Fallback: list DLOs and match the data DLO.
+ *
+ * Two platform wrinkles the fallback must survive (both a live org live-confirmed):
+ *  - **Profile sibling.** A `PR_`-prefixed profile DLO is NOT a Mapping source — exclude it. It
+ *    can even keep the *untruncated* object name (its hash segment is shorter), so a naive
+ *    `includes(token)` would wrongly resolve the Mapping to the profile DLO. Exclude `PR_` on the
+ *    exact path too, not just the prefix fallback.
+ *  - **Object-segment truncation.** Data Cloud caps the object segment of the generated devname,
+ *    so a long `sourceObject` is clipped (`InsightPocFeed` → `..._InsightPocFee_<hash>__dll`) and
+ *    the full token is no longer a substring. After the exact match misses, retry with
+ *    progressively shorter token prefixes, taking the longest prefix that yields exactly one
+ *    data-DLO candidate so we never guess between two streams.
  */
 async function resolveDloName(ctx: ResourceContext, derivedName: string): Promise<string> {
   try {
@@ -209,11 +220,22 @@ async function resolveDloName(ctx: ResourceContext, derivedName: string): Promis
         .dataLakeObjects ??
       (list as { data?: Array<{ name?: string; developerName?: string }> }).data ??
       [];
-    const match = items.find((d) => {
-      const n = d.name ?? d.developerName ?? "";
-      return /__dll$/i.test(n) && n.includes(token);
+    const nameOf = (d: { name?: string; developerName?: string }) =>
+      d.name ?? d.developerName ?? "";
+    // A Mapping always sources the DATA DLO, never the PR_ profile sibling.
+    const dataDlos = items.filter((d) => {
+      const n = nameOf(d);
+      return /__dll$/i.test(n) && !/^PR_/i.test(n);
     });
-    if (match) return match.name ?? match.developerName ?? derivedName;
+    // 1. Exact: the devname embeds the full object token (normal IngestApi stream).
+    let match = dataDlos.find((d) => nameOf(d).includes(token));
+    // 2. Truncated object segment — longest unambiguous prefix wins.
+    for (let len = token.length - 1; len >= 8 && !match; len--) {
+      const pref = token.slice(0, len);
+      const cands = dataDlos.filter((d) => nameOf(d).includes(pref));
+      if (cands.length === 1) match = cands[0];
+    }
+    if (match) return nameOf(match) || derivedName;
   } catch {
     /* fall through — return the derived name and let the poll surface the problem */
   }
