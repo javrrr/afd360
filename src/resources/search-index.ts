@@ -309,11 +309,49 @@ export const SearchIndexResource: Resource<SearchIndexResourceProps, SearchIndex
       errBodyIncludes(err, "not fully materialized") ||
       errBodyIncludes(err, "not materialized") ||
       is5xx(err);
-    const created = await retryOn(
-      () => ctx.client.searchIndex.create(body, { timeout: 120_000 }),
-      shouldRetry,
-      { attempts: 6, intervalMs: 15_000, backoff: 1, jitter: 0 },
-    );
+    let created: unknown;
+    try {
+      created = await retryOn(
+        () => ctx.client.searchIndex.create(body, { timeout: 120_000 }),
+        shouldRetry,
+        { attempts: 6, intervalMs: 15_000, backoff: 1, jitter: 0 },
+      );
+    } catch (err) {
+      // Orphan-safety gate (reported by a live org, live a live org org,
+      // 2026-10-01). The create POST is ASYNC and SIDE-EFFECTING: the platform
+      // can LAND the index record on-org and STILL return a "not fully
+      // materialized" / 5xx error because the source DMO's fact table isn't
+      // ready yet. When that error persists past the retry budget — e.g. the
+      // source DMO never materializes (the IngestApi DLO-discoverability gap) —
+      // the thrown error would abort the deploy with NO state entry, stranding
+      // the landed index as an UNTRACKED on-org orphan (and its platform-
+      // created chunk/vector DMOs with it). Before giving up, GET by
+      // developerName: if the index DID land, return it so afd360 records it as
+      // owned — readiness polling (isReady, 15-min budget) then governs whether
+      // the source ever materializes, and destroy/prune can tear it down either
+      // way. If nothing landed, GET returns null and we rethrow the original
+      // error (no false success). Safe in BOTH cases: behavior changes only
+      // when a resource actually exists on-org. Same async-gate theme as the CI
+      // fact-table and DMO reference-clear retries: a POST that *returns an
+      // error* is not proof the operation *didn't land*.
+      let landed: SearchIndexOutput | null = null;
+      try {
+        landed = await SearchIndexResource.read(ctx, props.developerName);
+      } catch {
+        // Recovery GET itself failed — fall through and rethrow the original
+        // create error, which is the more actionable signal.
+      }
+      if (landed && landed.id) {
+        process.stderr.write(
+          `  SearchIndex "${props.developerName}" landed on-org but its create ` +
+            `did not confirm (source DMO likely not yet materialized) — ` +
+            `recording it in state so it is tracked, not orphaned; readiness ` +
+            `polling will continue.\n`,
+        );
+        return landed;
+      }
+      throw err;
+    }
     const id = (created as { id?: string }).id;
     if (!id) {
       throw new Error(`SearchIndex create returned no id — cannot key state.`);

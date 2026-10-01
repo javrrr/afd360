@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { App, Stack } from "../../src/core/app.js";
 import { DMO } from "../../src/resources/dmo.js";
 import {
@@ -245,6 +245,84 @@ describe("SearchIndexResource.create — payload shape", () => {
       dmoFieldDeveloperName: "ssot__Description__c",
       relationships: [],
     });
+  });
+});
+
+describe("SearchIndexResource.create — orphan-safety gate (a live org)", () => {
+  const resourceProps = {
+    developerName: "PtIdx",
+    label: "PtIdx Search",
+    sourceDmoDeveloperName: "PrunetestChunk__dlm",
+    chunkDmoDeveloperName: "PtIdx_chunk",
+    chunkDmoLabel: "PtIdx chunk",
+    vectorDmoDeveloperName: "PtIdx_index",
+    vectorDmoLabel: "PtIdx index",
+    searchType: "HYBRID" as const,
+    processingType: "NEAR_REALTIME" as const,
+    fields: [{ fieldDeveloperName: "Body__c" }],
+    vectorRelatedFields: [
+      { dmoDeveloperName: "PrunetestChunk__dlm", fieldDeveloperName: "Id__c" },
+    ],
+    vectorEmbedding: {
+      similarityMetric: "COSINE",
+      embeddingModel: { id: "e5_large_v2", userValues: [] },
+      index: { id: "HNSW", userValues: [] },
+    },
+    dataSpace: "default",
+  };
+
+  // The create retry budget is a hardcoded 6 × 15s (constant backoff). Drive it
+  // with fake timers so these exhaustion-path tests run instantly instead of
+  // waiting ~75s of real backoff.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("recovers the landed index when create exhausts retries but the POST side-effected", async () => {
+    const ctx = mockCtx();
+    const create = ctx.client.searchIndex.create as ReturnType<typeof vi.fn>;
+    const get = ctx.client.searchIndex.get as ReturnType<typeof vi.fn>;
+    // Every create attempt returns "not materialized" — exhausts the budget.
+    create.mockRejectedValue({ status: 400, body: { message: "DMO is not fully materialized" } });
+    // But the index DID land on-org — recovery GET finds it.
+    get.mockResolvedValue({
+      id: "18l0000000Z",
+      developerName: "PtIdx",
+      runtimeStatus: null,
+    });
+    const p = SearchIndexResource.create(ctx, resourceProps);
+    await vi.runAllTimersAsync();
+    const out = await p;
+    expect(out.id).toBe("18l0000000Z");
+    expect(out.developerName).toBe("PtIdx");
+    // Create was attempted the full budget; recovery GET then confirmed landing.
+    expect(create).toHaveBeenCalledTimes(6);
+    expect(get).toHaveBeenCalledWith("PtIdx");
+  });
+
+  it("rethrows the original error when nothing landed on-org", async () => {
+    const ctx = mockCtx();
+    const create = ctx.client.searchIndex.create as ReturnType<typeof vi.fn>;
+    const get = ctx.client.searchIndex.get as ReturnType<typeof vi.fn>;
+    create.mockRejectedValue({ status: 400, body: { message: "DMO is not fully materialized" } });
+    // Recovery GET returns not-found (400 "was not found") → null → no false success.
+    get.mockRejectedValue({ status: 400, body: { message: "PtIdx was not found" } });
+    const p = SearchIndexResource.create(ctx, resourceProps);
+    const assertion = expect(p).rejects.toMatchObject({ status: 400 });
+    await vi.runAllTimersAsync();
+    await assertion;
+  });
+
+  it("rethrows the original create error when the recovery GET itself errors", async () => {
+    const ctx = mockCtx();
+    const create = ctx.client.searchIndex.create as ReturnType<typeof vi.fn>;
+    const get = ctx.client.searchIndex.get as ReturnType<typeof vi.fn>;
+    create.mockRejectedValue({ status: 503, body: { message: "upstream unavailable" } });
+    // Recovery GET throws a non-notfound error — must not mask the create error.
+    get.mockRejectedValue({ status: 500, body: { message: "boom" } });
+    const p = SearchIndexResource.create(ctx, resourceProps);
+    const assertion = expect(p).rejects.toMatchObject({ status: 503 });
+    await vi.runAllTimersAsync();
+    await assertion;
   });
 });
 
