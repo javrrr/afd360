@@ -355,6 +355,34 @@ describe("MappingResource.create (IngestApi DLO name resolution)", () => {
   });
 });
 
+describe("MappingResource.create (DLO-never-materialized timeout message)", () => {
+  it("rethrows the poll timeout as actionable 'ingest first' guidance", async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = mockCtx();
+      // Derived name resolves (fast path) but the DLO never exposes fields —
+      // the never-ingested IngestApi case. The readiness poll must time out.
+      (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+        fields: [],
+      });
+      const p = MappingResource.create(ctx, {
+        sourceDloName: "X__dll",
+        targetDmoName: "Y__dlm",
+        dataSpace: "default",
+        fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+      });
+      const assertion = expect(p).rejects.toThrow(/materialize after the first ingest/);
+      // Drive the 180s poll budget to exhaustion under fake timers.
+      await vi.advanceTimersByTimeAsync(200_000);
+      await assertion;
+      // The opaque poll message must NOT be what surfaces.
+      await expect(p).rejects.not.toThrow(/pollUntil timed out/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("MappingResource.delete (quirk B3 — cascade from DMO)", () => {
   it("is a no-op — does not call the API", async () => {
     const ctx = mockCtx();

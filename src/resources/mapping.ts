@@ -3,7 +3,7 @@ import { Construct, type Resource, type ResourceContext } from "../core/construc
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn5xx, errBodyIncludes, isNotFound } from "../client/retry.js";
-import { pollUntil } from "../core/poll.js";
+import { pollUntil, PollTimeoutError } from "../core/poll.js";
 import { DataStream } from "./data-stream.js";
 import { DMO } from "./dmo.js";
 import { attachMappingToSearchIndexes } from "./search-index.js";
@@ -252,23 +252,42 @@ async function resolveDloName(ctx: ResourceContext, derivedName: string): Promis
  * to a lag of 5-60s. Mapping create will fail during that window.
  *
  * Defaults: 5s × 36 = 3 min budget — covers the long tail prior tooling observed.
+ *
+ * On timeout, rethrow with the actionable cause rather than the bare poll
+ * message: for an **IngestApi** stream the DLO's fields only materialize after
+ * the FIRST ingest (a live org live-confirmed), so a Mapping deploy against a
+ * never-ingested stream will always time out here — the fix is to push data,
+ * then redeploy. (A wrong DLO name is the other cause; `resolveDloName` handles
+ * that upstream.)
  */
 async function waitForDloDiscoverable(
   ctx: ResourceContext,
   dloName: string,
   opts: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
-  await pollUntil<true>(
-    async () => {
-      try {
-        const raw = await ctx.client.dataLakeObjects.get(dloName);
-        return extractDloFieldArray(raw).length > 0 ? true : null;
-      } catch {
-        return null;
-      }
-    },
-    { intervalMs: opts.intervalMs ?? 5_000, timeoutMs: opts.timeoutMs ?? 180_000 },
-  );
+  try {
+    await pollUntil<true>(
+      async () => {
+        try {
+          const raw = await ctx.client.dataLakeObjects.get(dloName);
+          return extractDloFieldArray(raw).length > 0 ? true : null;
+        } catch {
+          return null;
+        }
+      },
+      { intervalMs: opts.intervalMs ?? 5_000, timeoutMs: opts.timeoutMs ?? 180_000 },
+    );
+  } catch (err) {
+    if (err instanceof PollTimeoutError) {
+      throw new Error(
+        `DLO "${dloName}" never exposed any fields within ${Math.round(err.elapsedMs / 1000)}s, ` +
+          `so the Mapping can't be created. For an IngestApi stream the DLO's fields only ` +
+          `materialize after the first ingest — push data to the stream, then redeploy. ` +
+          `(If this is an S3/Snowflake stream, the DLO may still be provisioning; retry shortly.)`,
+      );
+    }
+    throw err;
+  }
 }
 
 /**
