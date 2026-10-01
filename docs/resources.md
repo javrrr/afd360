@@ -399,6 +399,64 @@ simply never emitted. DELETE by server id (`1AK…` prefix), swallows 404.
 
 ---
 
+## Dashboard
+
+Source: [`src/resources/dashboard.ts`](../src/resources/dashboard.ts)
+
+A Tableau Next **dashboard** — a laid-out page of one or more `Visualization`
+tiles in a workspace. Like Visualization it rides the raw-REST seam
+(`src/client/rest.ts`) against **v67.0** `/tableau/dashboards` (version-gated:
+v64/v65 → `DOWNGRADE_VERSION_ERROR`).
+
+```ts
+new Dashboard(stack, "AtRiskOverview", {
+  label: "Accounts at Risk",
+  workspace: "Analytics_WS",          // workspaceIdOrApiName — PRE-EXISTING; afd360 never creates/deletes it
+  widgets: [
+    { visualization: winRateChart },  // Visualization construct (wires dependsOn) OR a viz dev-name string
+    // position defaults to a full-width tile stacked below the previous one:
+    // { visualization: "OtherViz", column: 0, row: 23, colspan: 48, rowspan: 23, legendPosition: "Right" },
+  ],
+  // Grid + style escape hatches (defaults match the live-confirmed capture):
+  // columnCount: 48, maxWidth: 1200, rowHeight: 20,
+  // customConfig: { queryCacheEnabled: true, queryCacheStaleness: "30min" },
+  // layoutStyle: { ... }, widgetStyle: { ... },
+});
+```
+
+Create is a **single POST**, built fresh — the read-only server fields are never
+emitted (`id`/`createdBy`/`createdDate`/`lastModifiedBy`/`lastModifiedDate`/
+`url`/`permissions`/`cacheKey`/`sourceVersion`/`status`/`actions`/`customViews`,
+plus the nested layout id and page id). DELETE/GET work by developer name as well
+as id; delete swallows 404 / 400 "was not found".
+
+- **Widget → viz binding is BY NAME ONLY** — on the wire each tile is
+  `widgets.<key>.source = { name: "<vizDevName>" }`. A `source.type` is rejected
+  (stripped); the widget-level `type: "visualization"` is a required polymorphic
+  discriminator and is kept. Pass a `Visualization` construct to wire `dependsOn`
+  and supply the dev name automatically, or a raw dev-name string to reference a
+  viz that already exists on the org (the referenced viz MUST exist or the bind
+  fails).
+- **Each tile is placed twice** on the wire from one authored `widgets[]` entry:
+  a positioned entry in `layouts[].pages[].widgets[]` (column/row/colspan/rowspan,
+  keyed by `name`) and a bound entry in the top-level `widgets` OBJECT (keyed by
+  the same `name`). The construct assigns keys `visualization_1`, `visualization_2`,
+  … in author order and lays tiles out on a 48-column grid: an unspecified tile is
+  full-width (`colspan = columnCount`, `rowspan = 23`) and stacks below the prior
+  one, so N default tiles don't overlap.
+- **`workspace`** is a durable, pre-existing container referenced by a bare
+  `workspaceIdOrApiName` string (unlike a viz's `{ id?, name }` object). afd360
+  does not manage it.
+- **Page name is a deterministic uuid** derived from the dashboard name
+  (UUIDv5-shaped), so re-synth yields a stable body → stable hash → noop
+  idempotency. (A random uuid per synth would defeat idempotency.)
+- **Prune ordering:** a dashboard references its viz tiles, which can't be torn
+  down while the dashboard points at them — so `Dashboard` is slotted ahead of
+  `Visualization` in `PRUNE_TYPE_PRIORITY` (teardown: Dashboard → Viz →
+  SemanticModel → CI → DMO).
+
+---
+
 ## Adopt vs. create vs. recreate
 
 When `afd360 deploy` processes a resource it picks one op per entry:

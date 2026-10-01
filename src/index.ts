@@ -88,3 +88,9 @@ export type {
   VizRole,
   VizAxis,
 } from "./resources/visualization.js";
+export { Dashboard } from "./resources/dashboard.js";
+export type {
+  DashboardProps,
+  DashboardOutput,
+  DashboardWidget,
+} from "./resources/dashboard.js";

@@ -9,6 +9,7 @@ import { CalculatedInsightResource } from "./calculated-insight.js";
 import { SearchIndexResource } from "./search-index.js";
 import { SemanticModelResource } from "./semantic-model.js";
 import { VisualizationResource } from "./visualization.js";
+import { DashboardResource } from "./dashboard.js";
 
 /**
  * Static `resource.type` → `Resource` map.
@@ -39,6 +40,7 @@ export const RESOURCE_REGISTRY: Record<string, Resource<never, never>> = {
   SearchIndex: SearchIndexResource as Resource<never, never>,
   SemanticModel: SemanticModelResource as Resource<never, never>,
   Visualization: VisualizationResource as Resource<never, never>,
+  Dashboard: DashboardResource as Resource<never, never>,
 };
 
 /**
@@ -53,6 +55,10 @@ export const PRUNE_TYPE_PRIORITY: readonly string[] = [
   "Mapping",
   "Relationship",
   "SearchIndex",
+  // Dashboard before Visualization: a dashboard widget references (binds) a viz
+  // by name, so the referencing dashboard tears down before the viz it points at.
+  // (Analytics teardown order: Dashboard → Viz → SemanticModel → CI → DMO.)
+  "Dashboard",
   // Visualization before SemanticModel: a viz binds to (references) a model, and
   // the model can't be torn down while a viz still points at it — so the viz
   // deletes first. (Analytics teardown order: Viz → SemanticModel → CI → DMO.)

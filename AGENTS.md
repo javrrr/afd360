@@ -119,6 +119,7 @@ Key facts to internalize:
 | `SearchIndex` | When the user wants RAG / semantic search over a DMO. Hybrid (vector + keyword) is the default. |
 | `SemanticModel` | When the user wants a Tableau Next semantic model (dimensions / measures / relationships / calculated measurements) over DMOs or CalculatedInsight outputs — the layer a Tableau Next workbook or Agentforce agent queries. |
 | `Visualization` | When the user wants a Tableau Next chart/table rendered over a `SemanticModel`. Binds to the model via `dataSource`; lives in a pre-existing `workspace`. |
+| `Dashboard` | When the user wants a Tableau Next dashboard — a laid-out page of one or more `Visualization` tiles in a pre-existing `workspace`. Binds each tile to a `Visualization` by name. |
 
 `docs/resources.md` has the full prop reference for each. Read that
 when you need exact field names or shapes.
@@ -136,6 +137,7 @@ what you generate.
 | "I want a metric / aggregation / count over data" | Connection → DataStream → DMO → Mapping → CalculatedInsight |
 | "I want a Tableau Next semantic model / dataset for BI or agents over my data" | Connection → DataStream → DMO → Mapping (→ CalculatedInsight if measures are aggregations), then SemanticModel |
 | "I want a Tableau Next chart / dashboard tile over my data" | …as above through SemanticModel, then Visualization (needs a pre-existing workspace id/name) |
+| "I want a Tableau Next dashboard / page of charts over my data" | …as above through Visualization (× N tiles), then Dashboard (binds the tiles by name; needs a pre-existing workspace id/name) |
 | "I want to ingest data into Data Cloud" | Connection → DataStream (+ DMO + Mapping if user wants typed DMO surface) |
 | "I want to bring in my org's own CRM data (Account, custom objects, …)" | `Connection.salesforceHome` → DataStream (same-org CRM / Home; no creds) |
 | "I want to set up an X connection" (no further ask) | Connection only |
