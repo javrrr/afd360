@@ -367,6 +367,41 @@ describe("SemanticModel construct — aggregationType guard", () => {
   });
 });
 
+describe("SemanticModel construct — model joinType guard", () => {
+  function modelWithJoin(joinType?: string) {
+    const { stack, dmo } = stackWith();
+    return () =>
+      new SemanticModel(stack, "Model", {
+        dataObjects: [
+          { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+        ],
+        relationships: [
+          {
+            apiName: "R",
+            cardinality: "OneToMany",
+            leftSemanticDefinitionApiName: "Spine",
+            rightSemanticDefinitionApiName: "Fact",
+            criteria: [{ leftSemanticFieldApiName: "Id", rightSemanticFieldApiName: "AccountId" }],
+            ...(joinType !== undefined ? { joinType } : {}),
+          },
+        ],
+      });
+  }
+
+  it("rejects an explicit 'Left' join on a base-model relationship", () => {
+    expect(modelWithJoin("Left")).toThrow(/must be "Auto".*logical views/s);
+  });
+
+  it("rejects 'Inner' too", () => {
+    expect(modelWithJoin("Inner")).toThrow(/joinType "Inner" is invalid/);
+  });
+
+  it("accepts 'Auto' and the omitted default", () => {
+    expect(modelWithJoin("Auto")).not.toThrow();
+    expect(modelWithJoin(undefined)).not.toThrow();
+  });
+});
+
 describe("SemanticModelResource.create — atomic rollback", () => {
   beforeEach(() => {
     connectRequest.mockReset();
