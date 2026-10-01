@@ -554,6 +554,7 @@ describe("SemanticModel construct — filters (pass-through)", () => {
   function modelWith(opts: {
     dobFilters?: ReadonlyArray<Record<string, unknown>>;
     cmFilters?: ReadonlyArray<Record<string, unknown>>;
+    filterLogic?: string;
   }) {
     const { stack, dmo } = stackWith();
     return new SemanticModel(stack, "Model", {
@@ -563,6 +564,7 @@ describe("SemanticModel construct — filters (pass-through)", () => {
           source: dmo,
           dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text", isPrimaryKey: true }],
           ...(opts.dobFilters ? { filters: opts.dobFilters } : {}),
+          ...(opts.filterLogic !== undefined ? { filterLogic: opts.filterLogic } : {}),
         },
       ],
       calculatedMeasurements: [
@@ -622,6 +624,27 @@ describe("SemanticModel construct — filters (pass-through)", () => {
       modelWith({ dobFilters: [{ field: "Status", operator: "In", values: ["Won"] }] }).props,
     );
     expect(filtered).not.toBe(base);
+  });
+
+  it("filterLogic rides as a SIBLING of filters on the data-object body (not nested)", async () => {
+    const filter = { operator: "In", values: ["Won", "Lost"] };
+    const bodies = await postBodies(
+      modelWith({ dobFilters: [filter], filterLogic: "1 AND 2" }).props,
+    );
+    expect(bodies[DOB_PATH]!.filterLogic).toBe("1 AND 2");
+    // and the filters array is untouched (logic is NOT folded into a filter)
+    expect(bodies[DOB_PATH]!.filters).toEqual([filter]);
+  });
+
+  it("omitting filterLogic leaves the key absent from the wire body", async () => {
+    const bodies = await postBodies(modelWith({}).props);
+    expect(bodies[DOB_PATH]!).not.toHaveProperty("filterLogic");
+  });
+
+  it("filterLogic participates in the hash (and omitted == absent)", () => {
+    const base = SemanticModelResource.hash(modelWith({}).props);
+    const withLogic = SemanticModelResource.hash(modelWith({ filterLogic: "1 OR 2" }).props);
+    expect(withLogic).not.toBe(base);
   });
 });
 

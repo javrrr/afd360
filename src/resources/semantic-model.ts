@@ -146,8 +146,22 @@ export interface SemanticDataObjectProps {
    * Row-level filters restricting the rows this data object contributes (the
    * native equivalent of a CI's `WHERE`). Forwarded verbatim; see
    * {@link SemanticFilter}. Omit (or `[]`) for no filter — the wire default.
+   *
+   * LIVE (a live org, v64): each filter is `{ operator: "In", values: [...] }`
+   * (an `In` operator needs ≥2 values) and references a **calculated** field —
+   * the server rejects a raw-dimension field ref with "Invalid calculated
+   * Field". So SDO filters on raw columns aren't yet reachable through afd360
+   * (calculated-dimension support is the prerequisite); reframe a WHERE as a
+   * conditional-aggregation `calculatedMeasurement` for now.
    */
   readonly filters?: ReadonlyArray<SemanticFilter>;
+  /**
+   * Boolean combination of the `filters` by 1-based index, e.g. `"1 AND 2"`.
+   * Must sit HERE as a sibling of `filters`, NOT inside a filter object — the
+   * server 400s "Filter logic is empty" otherwise (a live org, live v64).
+   * Omit when there are no filters.
+   */
+  readonly filterLogic?: string;
 }
 
 export interface SemanticRelationshipCriterion {
@@ -268,6 +282,8 @@ interface ResolvedDataObject {
   /** Undefined when the author supplied none — keeps the hash + wire bytes
    * identical to pre-filters manifests (hashProps drops undefined keys). */
   readonly filters?: ReadonlyArray<SemanticFilter>;
+  /** Sibling of `filters` (see props). Undefined when none — hash/wire-stable. */
+  readonly filterLogic?: string;
 }
 
 interface ResolvedCriterion {
@@ -364,6 +380,9 @@ function buildDataObjectBody(d: ResolvedDataObject): unknown {
     tableType: d.tableType,
     shouldIncludeAllFields: d.shouldIncludeAllFields,
     filters: d.filters ?? [],
+    // filterLogic is a SIBLING of filters (server requires it here, not nested).
+    // Emitted only when supplied — an empty-filters data object omits it.
+    ...(d.filterLogic !== undefined ? { filterLogic: d.filterLogic } : {}),
     semanticDimensions: d.dimensions.map((dim) => ({
       apiName: dim.apiName,
       dataObjectFieldName: dim.dataObjectFieldName,
@@ -597,6 +616,7 @@ export class SemanticModel extends Construct {
         dimensions,
         measures,
         ...(filters ? { filters } : {}),
+        ...(dob.filterLogic !== undefined ? { filterLogic: dob.filterLogic } : {}),
       };
     });
 
