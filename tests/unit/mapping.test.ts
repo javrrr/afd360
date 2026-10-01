@@ -278,6 +278,83 @@ describe("MappingResource.create (source-field pre-validation)", () => {
   });
 });
 
+describe("MappingResource.create (IngestApi DLO name resolution)", () => {
+  // Build a ctx whose get() throws for the derived ghost name but returns a
+  // ready field set for `realDlo`, and whose list() returns `dlos`.
+  function resolveCtx(realDlo: string, dlos: Array<{ name: string }>): ResourceContext {
+    const ctx = mockCtx();
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockImplementation(
+      async (name: string) => {
+        if (name === realDlo) return { fields: [{ developerName: "Id__c" }] };
+        throw new Error("404 not found");
+      },
+    );
+    (
+      ctx.client.dataLakeObjects as unknown as { list: ReturnType<typeof vi.fn> }
+    ).list = vi.fn().mockResolvedValue({ dataLakeObjects: dlos });
+    (ctx.client.dataModelObjects.createMappings as ReturnType<typeof vi.fn>).mockImplementation(
+      async (body: { sourceEntityDeveloperName: string }) => ({
+        developerName: "map1",
+        sourceEntityDeveloperName: body.sourceEntityDeveloperName,
+        targetEntityDeveloperName: "Y__dlm",
+      }),
+    );
+    return ctx;
+  }
+
+  const props = (sourceDloName: string) => ({
+    sourceDloName,
+    targetDmoName: "Y__dlm",
+    dataSpace: "default",
+    fieldMappings: [{ source: "Id__c", target: "Id__c" }],
+  });
+
+  it("resolves the truncated data DLO when the object segment is clipped", async () => {
+    // Platform clips "LongFeedObjectName" → "LongFeedObjectNam" in the data DLO
+    // devname; the full-token includes() misses. The PR_ profile sibling keeps
+    // the UNtruncated token (shorter hash) and must NOT be chosen.
+    const dataDlo = "Str_Ingest_LongFeedObjectNam_A1B2C3D4__dll";
+    const prDlo = "PR_Str_Ingest_LongFeedObjectName_A1B2__dll";
+    const ctx = resolveCtx(dataDlo, [{ name: prDlo }, { name: dataDlo }]);
+    const out = await MappingResource.create(ctx, props("LongFeedObjectName__dll"));
+    expect(out.sourceEntityDeveloperName).toBe(dataDlo);
+    const body = (ctx.client.dataModelObjects.createMappings as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as { sourceEntityDeveloperName: string };
+    expect(body.sourceEntityDeveloperName).toBe(dataDlo);
+  });
+
+  it("excludes the PR_ profile sibling even on an exact token match", async () => {
+    // Both DLOs embed the full token "Feed"; the data DLO (non-PR_) wins.
+    const dataDlo = "Str_Ingest_Feed_H1__dll";
+    const prDlo = "PR_Str_Ingest_Feed_H2__dll";
+    const ctx = resolveCtx(dataDlo, [{ name: prDlo }, { name: dataDlo }]);
+    const out = await MappingResource.create(ctx, props("Feed__dll"));
+    expect(out.sourceEntityDeveloperName).toBe(dataDlo);
+  });
+
+  it("falls back to the derived name when no unambiguous data DLO matches", async () => {
+    // Two non-PR_ candidates share the prefix → ambiguous → don't guess; the
+    // derived name is returned and the (mocked-ready) poll lets create proceed.
+    const derived = "Feed__dll";
+    const ctx = mockCtx();
+    (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fields: [{ developerName: "Id__c" }],
+    });
+    (
+      ctx.client.dataLakeObjects as unknown as { list: ReturnType<typeof vi.fn> }
+    ).list = vi
+      .fn()
+      .mockResolvedValue({ dataLakeObjects: [{ name: "A_Feed_x__dll" }, { name: "B_Feed_y__dll" }] });
+    (ctx.client.dataModelObjects.createMappings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      developerName: "map1",
+      sourceEntityDeveloperName: derived,
+      targetEntityDeveloperName: "Y__dlm",
+    });
+    const out = await MappingResource.create(ctx, props(derived));
+    expect(out.sourceEntityDeveloperName).toBe(derived);
+  });
+});
+
 describe("MappingResource.delete (quirk B3 — cascade from DMO)", () => {
   it("is a no-op — does not call the API", async () => {
     const ctx = mockCtx();
