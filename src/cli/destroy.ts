@@ -94,6 +94,7 @@ export function registerDestroy(program: Command): void {
         }
       }
 
+      let protectedCount = 0;
       try {
         for (const uid of reverseOrder) {
           const c = byId.get(uid)!;
@@ -131,6 +132,7 @@ export function registerDestroy(program: Command): void {
           // to tear it down.
           if (isProtected(c) || entry.protected === true) {
             process.stdout.write(`  ${pc.cyan("skip")}   ${uid} (protected)\n`);
+            protectedCount += 1;
             continue;
           }
           process.stdout.write(`  ${pc.red("delete")} ${uid}\n`);
@@ -143,7 +145,16 @@ export function registerDestroy(program: Command): void {
         state.lastDeployedAt = new Date().toISOString();
         await writeState(orgAlias, state);
       }
-      process.stdout.write(`${pc.bold("done")}  state cleared.\n`);
+      // A protected entry is retained (kept in state + on-org), so "state
+      // cleared" would be a lie when any survive. Report the honest residual.
+      if (protectedCount > 0) {
+        process.stdout.write(
+          `${pc.bold("done")}  ${protectedCount} protected resource${protectedCount === 1 ? "" : "s"} retained ` +
+            `(drop protect() + redeploy to clear, then destroy); rest torn down.\n`,
+        );
+      } else {
+        process.stdout.write(`${pc.bold("done")}  state cleared.\n`);
+      }
     });
 }
 
