@@ -343,19 +343,29 @@ delete-and-recreate (same policy as every other resource).
   "RecordCurrency"` over `cdp_sys_record_currency__c`, or the platform 400s
   "missing a record currency field". See
   [[currency-type-breaks-semantic-layer]].
-- **Filters (`filters` on a data object or calculated measurement):** the
-  native semantic-layer equivalent of a CI's `WHERE` — restricts the rows a
-  data object contributes before measures aggregate (e.g. porting
-  `WHERE Status IN ('Won','Lost')` out of a CI). The exact
-  `/ssot/semantic/models` filter grammar is **not** carried by data-360-sdk
-  and is still being confirmed against a live org, so afd360 forwards each
-  filter object **verbatim** — the same pass-through contract as a
-  calculated-measurement `expression` string (afd360 doesn't validate the
-  grammar, the platform does). Omitting `filters` (or passing `[]`) is the
-  wire default `filters: []` and hashes identically to a pre-filters manifest,
-  so adding the prop never triggers a spurious recreate. The `SemanticFilter`
-  type is intentionally open (`Record<string, unknown>`) until a live response
-  pins the shape.
+- **Filters (`filters` + `filterLogic` on a data object):** the native
+  semantic-layer equivalent of a CI's `WHERE` — restricts the rows a data
+  object contributes before measures aggregate. afd360 forwards each filter
+  object **verbatim** (open `SemanticFilter` = `Record<string, unknown>`) — the
+  same pass-through contract as a calculated-measurement `expression`. Omitting
+  `filters` (or passing `[]`) is the wire default `filters: []` and hashes
+  identically to a pre-filters manifest, so adding the prop never triggers a
+  spurious recreate. Live grammar (a live org, v64):
+    - Each filter is `{ operator: "In", values: [...] }`; the `In` operator
+      requires **≥2 values** (fewer → "Values field must contain at least two
+      values for the operator: In").
+    - `filterLogic` (e.g. `"1 AND 2"`, 1-based filter indices) is a **sibling**
+      of `filters` on the data-object body — afd360 exposes it as a top-level
+      prop. Nesting it inside a filter object 400s "Filter logic is empty".
+    - **Caveat — raw columns aren't filterable yet.** The field ref in a filter
+      must resolve to a **calculated** field; a raw-dimension ref 400s "Invalid
+      calculated Field". afd360 doesn't yet expose calculated *dimensions*
+      (only calculated *measurements*), so a model-level WHERE on a raw column
+      isn't reachable through the construct. **Workaround:** reframe the WHERE
+      as a conditional-aggregation `calculatedMeasurement`, e.g.
+      `sum(if [Fact.Status] = "Won" then 1 else 0 end)` — live-validated, needs
+      no filter. Calculated-dimension support is the real prerequisite for raw
+      SDO filters (tracked, pending the live create shape).
 - **Cio data objects reject type coercion:** a measure's `storageDataType`
   must equal the CI output field's native type.
 - **tableType** is `Standard` (NOT "Full"); **sentiment** accepts only
