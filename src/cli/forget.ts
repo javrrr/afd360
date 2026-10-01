@@ -2,6 +2,7 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { loadApp } from "./load-config.js";
 import { readState, writeState } from "../core/state.js";
+import { applyMoves } from "../core/moves.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { ResourceConstruct } from "../core/app.js";
 import type { Construct } from "../core/construct.js";
@@ -50,10 +51,16 @@ export function registerForget(program: Command): void {
       const orgAlias = opts.org ?? stack.targetOrg;
 
       const state = await readState(orgAlias, stack.id);
+      // Apply declared renames first so forget targets / orphan detection see
+      // the re-keyed entries (a moved construct is no longer an orphan).
+      const movedApplied = applyMoves(state, stack.moved);
       const resources = collectResources(stack);
       const manifestIds = new Set(resources.map((r) => r.uniqueId));
 
       process.stdout.write(`${pc.bold("forget")} ${orgAlias} (${stack.id})\n`);
+      for (const m of movedApplied) {
+        process.stdout.write(`  ${pc.cyan("moved")}  ${m.from} ${pc.gray("→")} ${m.to}\n`);
+      }
 
       // Build the target set. Explicit uniqueIds always count; --all-orphans
       // adds the not-owned + stale orphans (NOT owned/prunable ones — those are

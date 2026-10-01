@@ -412,6 +412,31 @@ describe("collectOrphans (orphan classification)", () => {
     expect(collectOrphans(new Set<string>(), state)[0]!.kind).toBe("stale");
   });
 
+  it("classifies an owned, live, protected entry as 'protected' (prune skips it)", () => {
+    const state = stateWith({
+      "S/Keep": { type: "DMO", apiName: "Keep__dlm", salesforceId: "0dm", hash: "h", createdAt: "t", owned: true, protected: true },
+    });
+    const orphans = collectOrphans(new Set<string>(), state);
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]!.kind).toBe("protected");
+  });
+
+  it("prefers 'forget' over 'protected' when a protected entry is also not-owned", () => {
+    // owned:false is checked first — a not-owned resource is never afd360's to
+    // delete regardless of the protect flag, so forget (untrack) is the remedy.
+    const state = stateWith({
+      "S/Odd": { type: "Connection", apiName: "O", salesforceId: "0sO", hash: "h", createdAt: "t", owned: false, protected: true },
+    });
+    expect(collectOrphans(new Set<string>(), state)[0]!.kind).toBe("forget");
+  });
+
+  it("prefers 'stale' over 'protected' when a protected entry has no salesforceId", () => {
+    const state = stateWith({
+      "S/Odd": { type: "DMO", apiName: "O", hash: "h", createdAt: "t", owned: true, protected: true },
+    });
+    expect(collectOrphans(new Set<string>(), state)[0]!.kind).toBe("stale");
+  });
+
   it("classifies a mix and skips manifest-present entries", () => {
     const state = stateWith({
       "S/Kept": { type: "Connection", apiName: "K", salesforceId: "0sK", hash: "h", createdAt: "t", owned: true },

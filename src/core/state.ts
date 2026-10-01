@@ -31,6 +31,16 @@ export interface StateResource {
    * pre-feature state files — prune falls back to a type-priority order.
    */
   dependsOn?: string[];
+  /**
+   * RETAIN marker: the construct was flagged with `protect()` at its last
+   * deploy. Both `deploy --prune` and `destroy` SKIP a protected resource
+   * instead of deleting it — afd360 retains it on the org. Persisted so orphan
+   * prune can honor the flag after the construct is removed from the manifest
+   * (the construct, and its live `isProtected`, are gone by then). Absent /
+   * false → normal deletion rules apply. Analog: CDK `RemovalPolicy.RETAIN`,
+   * Pulumi `retainOnDelete`, Terraform `prevent_destroy`.
+   */
+  protected?: boolean;
 }
 
 export interface StackState {

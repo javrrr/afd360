@@ -5,8 +5,9 @@ export const VERSION: string = typeof __PKG_VERSION__ !== "undefined" ? __PKG_VE
 
 export { App, Stack } from "./core/app.js";
 export type { Plan, PlanResource, StackProps } from "./core/app.js";
-export { Construct } from "./core/construct.js";
+export { Construct, protect, isProtected } from "./core/construct.js";
 export type { Resource, ResourceContext, Scope } from "./core/construct.js";
+export type { MovedEntry } from "./core/moves.js";
 
 export { Connection } from "./resources/connection.js";
 export type { ConnectionProps, ConnectionOutput } from "./resources/connection.js";

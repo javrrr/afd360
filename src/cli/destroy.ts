@@ -5,10 +5,12 @@ import { loadApp } from "./load-config.js";
 import { getSession } from "../client/auth.js";
 import { createClient } from "../client/factory.js";
 import { readState, writeState } from "../core/state.js";
+import { applyMoves } from "../core/moves.js";
 import { reverseTopologicalSort, topologicalSort } from "../core/graph.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
+import { isProtected } from "../core/construct.js";
 import { substituteEnv, UnresolvedEnvError } from "../core/env.js";
 
 const DEFAULT_CONFIG = "afd360.config.ts";
@@ -39,6 +41,10 @@ export function registerDestroy(program: Command): void {
       const ctx: ResourceContext = { client, session, orgAlias };
 
       const state = await readState(orgAlias, stack.id);
+      // Re-key any declared renames before planning the teardown, so a moved
+      // construct's live resource is matched (and deleted) under its new id
+      // rather than stranded as an orphan under the old one.
+      const movedApplied = applyMoves(state, stack.moved);
       const resources = collectResources(stack);
       const edges = resources.flatMap((r) =>
         r.dependsOn.map((d) => ({ from: d.uniqueId, to: r.uniqueId })),
@@ -49,6 +55,9 @@ export function registerDestroy(program: Command): void {
       const byId = new Map(resources.map((r) => [r.uniqueId, r]));
 
       process.stdout.write(`${pc.bold("destroy")} ${orgAlias} (${stack.id})\n`);
+      for (const m of movedApplied) {
+        process.stdout.write(`  ${pc.cyan("moved")}  ${m.from} ${pc.gray("→")} ${m.to}\n`);
+      }
 
       // Pre-pass: orphan adoption (see adoptOrphans for full rationale). This
       // is read-only + in-memory state synthesis — no deletes happen yet, so
@@ -112,6 +121,16 @@ export function registerDestroy(program: Command): void {
           if (entry.owned === false) {
             process.stdout.write(`  ${pc.gray("skip")}   ${uid} (adopted, not owned)\n`);
             delete state.resources[uid];
+            continue;
+          }
+          // Protected (RETAIN) resources survive destroy — the user flagged the
+          // construct with `protect()` (live) or it was flagged at its last
+          // deploy (persisted as entry.protected). Unlike the not-owned skips
+          // above, KEEP the state entry: the resource is still owned and still
+          // tracked; we're only declining to delete it. Drop the protect() flag
+          // to tear it down.
+          if (isProtected(c) || entry.protected === true) {
+            process.stdout.write(`  ${pc.cyan("skip")}   ${uid} (protected)\n`);
             continue;
           }
           process.stdout.write(`  ${pc.red("delete")} ${uid}\n`);
