@@ -89,10 +89,12 @@ export interface SemanticDimension {
 /**
  * One business measure. Extends a dimension with aggregation metadata.
  *
- * `dataType` is the display enum and is NARROWER than storage: it accepts
- * `Number`/`Currency` but REJECTS `Percent` — a natively-Percent column can't
- * be a measure (model it as a dimension). For a Cio data object `storageDataType`
- * must equal the field's native type.
+ * `dataType` is the display enum: `Number`, `Currency`, or `Percentage`. The
+ * bare string `Percent` is REJECTED — a natively-Percent column is a valid
+ * measure, but its display (and storage) type is spelled `Percentage`, not
+ * `Percent`/`Number` (the platform 400s "This Data Type can't be converted …"
+ * on `Number` over a Percent column). Live-verified on the v64 rig. For a Cio
+ * data object `storageDataType` must equal the field's native type.
  */
 export interface SemanticMeasure {
   readonly apiName: string;
@@ -100,7 +102,13 @@ export interface SemanticMeasure {
   readonly dataType: string;
   readonly label?: string;
   readonly storageDataType?: string;
-  /** `UserAgg` (default), `Sum`, `Avg`, … */
+  /**
+   * Semantic aggregation type. Default `UserAgg`. Valid values (live-verified
+   * v64 / SF Tableau-semantics authoring): `Sum`, `Average`, `Min`, `Max`,
+   * `Median`, `Count`, `Count Distinct`, `Stddev`, `Stddevp`, `Var`, `Varp`,
+   * `First`, `Last`, `UserAgg`, `None`. NOTE it is `Average`, NOT `Avg` — the
+   * server 400s (`Invalid Semantic Aggregation Type: Avg`) on the SQL spelling.
+   */
   readonly aggregationType?: string;
   readonly decimalPlace?: number;
   /** `Up` (default) | `Down` | `None`. */
@@ -475,17 +483,34 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
     // 1. shell
     await post(MODELS_PATH, buildShellBody(props));
     const modelPath = `${MODELS_PATH}/${props.apiName}`;
-    // 2. data objects (one per DMO/CI)
-    for (const dob of props.dataObjects) {
-      await post(`${modelPath}/data-objects`, buildDataObjectBody(dob));
-    }
-    // 3. relationships
-    for (const rel of props.relationships) {
-      await post(`${modelPath}/relationships`, buildRelationshipBody(rel));
-    }
-    // 4. calculated measurements
-    for (const cm of props.calculatedMeasurements) {
-      await post(`${modelPath}/calculated-measurements`, buildCalcMeasurementBody(cm));
+
+    // Steps 2-4 attach sub-resources to the shell. If any fails, the shell (plus
+    // whatever sub-resources already landed) would strand on-org with NO state
+    // entry: the next deploy can neither re-create it (the shell POST 409s on the
+    // duplicate name) nor usefully adopt it (it's incomplete). Make create ATOMIC
+    // — on any failure, roll the shell back (DELETE cascades to its children) and
+    // rethrow the ORIGINAL error so the real 400 is what reaches the user.
+    try {
+      // 2. data objects (one per DMO/CI)
+      for (const dob of props.dataObjects) {
+        await post(`${modelPath}/data-objects`, buildDataObjectBody(dob));
+      }
+      // 3. relationships
+      for (const rel of props.relationships) {
+        await post(`${modelPath}/relationships`, buildRelationshipBody(rel));
+      }
+      // 4. calculated measurements
+      for (const cm of props.calculatedMeasurements) {
+        await post(`${modelPath}/calculated-measurements`, buildCalcMeasurementBody(cm));
+      }
+    } catch (err) {
+      try {
+        await SemanticModelResource.delete(ctx, props.apiName);
+      } catch {
+        // Best-effort rollback — swallow so the original create error surfaces,
+        // not a secondary cleanup failure. A surviving shell is still adoptable.
+      }
+      throw err;
     }
 
     const hydrated = await SemanticModelResource.read(ctx, props.apiName);
@@ -611,6 +636,9 @@ export class SemanticModel extends Construct {
       if (cmFilters) base.filters = cmFilters;
       // Aggregate flavor iff aggregationType is supplied; row-level omits all three.
       if (cm.aggregationType !== undefined) {
+        const cmWhere = `SemanticModel "${this.apiName}" calculated measurement "${cm.apiName}"`;
+        assertAggregationType(cmWhere, cm.aggregationType);
+        assertAggregationType(cmWhere, cm.totalAggregationType);
         base.aggregationType = cm.aggregationType;
         base.level = cm.level ?? "AggregateFunction";
         base.totalAggregationType = cm.totalAggregationType ?? "Sum";
@@ -748,11 +776,31 @@ function resolveMeasure(m: SemanticMeasure): ResolvedMeasure {
 }
 
 /**
- * Fast-fail on two platform constraints that otherwise surface as opaque 400s:
- *  - A measure's display `dataType` of `Percent` is REJECTED (the display enum
- *    is narrower than storage). Model a Percent column as a dimension.
+ * Catch the common `Avg` mistake before the server does. The semantic layer
+ * spells the mean aggregation `Average`; the SQL-style `Avg` 400s with
+ * `Invalid Semantic Aggregation Type: Avg` (live-verified v64). This is a
+ * targeted alias check, NOT a full allowlist — the valid enum has more members
+ * than afd360 has live-confirmed, and gatekeeping the whole space would risk
+ * false-rejecting a valid-but-unverified type. `where` locates the offender.
+ */
+function assertAggregationType(where: string, agg: string | undefined): void {
+  if (agg !== undefined && agg.toLowerCase() === "avg") {
+    throw new Error(
+      `${where}: aggregationType "${agg}" is invalid — the semantic layer spells ` +
+        `the mean aggregation "Average" (the SQL spelling "Avg" 400s with ` +
+        `"Invalid Semantic Aggregation Type: Avg"). Use "Average".`,
+    );
+  }
+}
+
+/**
+ * Fast-fail on platform constraints that otherwise surface as opaque 400s:
+ *  - A measure's display `dataType` of `Percent` is REJECTED. A natively-Percent
+ *    column IS a valid measure — but its type is spelled `Percentage`, not
+ *    `Percent`/`Number`. Live-verified v64.
  *  - A `Currency` measure REQUIRES a sibling dimension on the same data object
  *    with `semanticDataType: "RecordCurrency"` (over `cdp_sys_record_currency__c`).
+ *  - `aggregationType: "Avg"` → should be `"Average"` (see assertAggregationType).
  */
 function validateMeasures(
   modelApiName: string,
@@ -765,10 +813,11 @@ function validateMeasures(
     if (m.dataType === "Percent") {
       throw new Error(
         `${where}: measure "${m.apiName}" has dataType "Percent", which the semantic ` +
-          `layer rejects for measures (the display enum is narrower than storage). ` +
-          `Model it as a dimension instead, or drop it.`,
+          `layer rejects. A natively-Percent column IS a valid measure — spell its ` +
+          `dataType (and storageDataType) "Percentage", not "Percent" or "Number".`,
       );
     }
+    assertAggregationType(`${where} measure "${m.apiName}"`, m.aggregationType);
   }
   const hasCurrencyMeasure = measures.some((m) => m.dataType === "Currency");
   if (hasCurrencyMeasure) {

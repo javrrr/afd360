@@ -313,9 +313,12 @@ new SemanticModel(stack, "SalesModel", {
 Create issues a **4-step ordered POST** sequence, each sub-resource
 referencing the prior by `apiName` (no id remap): shell → `data-objects`
 (one per DMO/CI) → `relationships` → `calculated-measurements`, then a GET
-hydrate. DELETE cascades to all sub-resources and swallows 404. `update()`
-is unimplemented — v1 drift is delete-and-recreate (same policy as every
-other resource).
+hydrate. The sequence is **atomic**: if any step after the shell fails
+(e.g. a bad relationship criterion), afd360 best-effort deletes the shell
+before rethrowing, so a failed deploy never strands a half-built,
+measure-less model on the org. DELETE cascades to all sub-resources and
+swallows 404. `update()` is unimplemented — v1 drift is
+delete-and-recreate (same policy as every other resource).
 
 - **Source wiring:** pass a `DMO` or `CalculatedInsight` construct as
   `source` — afd360 infers `dataObjectName`/`dataObjectType` and auto-wires
@@ -325,9 +328,16 @@ other resource).
   the DMOs) — the fact table materializes only after the mapping runs.
   Reciprocal `attachMappingToSemanticModels` wiring makes authoring order
   irrelevant.
-- **Measure guard — Percent:** `dataType: "Percent"` on a *measure* is
-  rejected at construct time (the semantic layer refuses it). Model a native
-  Percent column as a dimension.
+- **Measure guard — Percent vs Percentage:** `dataType: "Percent"` on a
+  *measure* is rejected at construct time, but a natively-Percent column IS a
+  valid measure — spell its `dataType` (and `storageDataType`) **`Percentage`**,
+  not `Percent` or `Number` (`Number` over a Percent column 400s "This Data Type
+  can't be converted …"). Live-verified on the v64 rig.
+- **Measure guard — aggregationType:** it is **`Average`**, not `Avg` — the SQL
+  spelling 400s (`Invalid Semantic Aggregation Type: Avg`). afd360 fast-fails the
+  `Avg` mistake at construct time. Valid values: `Sum`, `Average`, `Min`, `Max`,
+  `Median`, `Count`, `Count Distinct`, `Stddev`, `Stddevp`, `Var`, `Varp`,
+  `First`, `Last`, `UserAgg` (default), `None`.
 - **Measure guard — Currency:** any Currency measure requires a sibling
   dimension on the same data object flagged `semanticDataType:
   "RecordCurrency"` over `cdp_sys_record_currency__c`, or the platform 400s
