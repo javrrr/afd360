@@ -8,6 +8,7 @@ import { RelationshipResource } from "./relationship.js";
 import { CalculatedInsightResource } from "./calculated-insight.js";
 import { SearchIndexResource } from "./search-index.js";
 import { SemanticModelResource } from "./semantic-model.js";
+import { VisualizationResource } from "./visualization.js";
 
 /**
  * Static `resource.type` → `Resource` map.
@@ -37,6 +38,7 @@ export const RESOURCE_REGISTRY: Record<string, Resource<never, never>> = {
   CalculatedInsight: CalculatedInsightResource as Resource<never, never>,
   SearchIndex: SearchIndexResource as Resource<never, never>,
   SemanticModel: SemanticModelResource as Resource<never, never>,
+  Visualization: VisualizationResource as Resource<never, never>,
 };
 
 /**
@@ -51,6 +53,10 @@ export const PRUNE_TYPE_PRIORITY: readonly string[] = [
   "Mapping",
   "Relationship",
   "SearchIndex",
+  // Visualization before SemanticModel: a viz binds to (references) a model, and
+  // the model can't be torn down while a viz still points at it — so the viz
+  // deletes first. (Analytics teardown order: Viz → SemanticModel → CI → DMO.)
+  "Visualization",
   // SemanticModel before CalculatedInsight + DMO: a model HARD-BLOCKS deletion
   // of the CIs/DMOs it references (platform 400 DELETE_FAILED), so it must be
   // torn down first.

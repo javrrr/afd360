@@ -78,3 +78,12 @@ export type {
   SemanticCalculatedMeasurementProps,
   SemanticCardinality,
 } from "./resources/semantic-model.js";
+export { Visualization } from "./resources/visualization.js";
+export type {
+  VisualizationProps,
+  VisualizationOutput,
+  VisualizationWorkspace,
+  VizField,
+  VizRole,
+  VizAxis,
+} from "./resources/visualization.js";
