@@ -333,6 +333,19 @@ other resource).
   "RecordCurrency"` over `cdp_sys_record_currency__c`, or the platform 400s
   "missing a record currency field". See
   [[currency-type-breaks-semantic-layer]].
+- **Filters (`filters` on a data object or calculated measurement):** the
+  native semantic-layer equivalent of a CI's `WHERE` — restricts the rows a
+  data object contributes before measures aggregate (e.g. porting
+  `WHERE Status IN ('Won','Lost')` out of a CI). The exact
+  `/ssot/semantic/models` filter grammar is **not** carried by data-360-sdk
+  and is still being confirmed against a live org, so afd360 forwards each
+  filter object **verbatim** — the same pass-through contract as a
+  calculated-measurement `expression` string (afd360 doesn't validate the
+  grammar, the platform does). Omitting `filters` (or passing `[]`) is the
+  wire default `filters: []` and hashes identically to a pre-filters manifest,
+  so adding the prop never triggers a spurious recreate. The `SemanticFilter`
+  type is intentionally open (`Record<string, unknown>`) until a live response
+  pins the shape.
 - **Cio data objects reject type coercion:** a measure's `storageDataType`
   must equal the CI output field's native type.
 - **tableType** is `Standard` (NOT "Full"); **sentiment** accepts only

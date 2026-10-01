@@ -402,6 +402,85 @@ describe("SemanticModelResource — CRUD wire calls", () => {
   });
 });
 
+describe("SemanticModel construct — filters (pass-through)", () => {
+  beforeEach(() => {
+    connectRequest.mockReset();
+  });
+
+  function modelWith(opts: {
+    dobFilters?: ReadonlyArray<Record<string, unknown>>;
+    cmFilters?: ReadonlyArray<Record<string, unknown>>;
+  }) {
+    const { stack, dmo } = stackWith();
+    return new SemanticModel(stack, "Model", {
+      dataObjects: [
+        {
+          apiName: "Fact",
+          source: dmo,
+          dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text", isPrimaryKey: true }],
+          ...(opts.dobFilters ? { filters: opts.dobFilters } : {}),
+        },
+      ],
+      calculatedMeasurements: [
+        {
+          apiName: "Cnt",
+          expression: "count([Fact])",
+          aggregationType: "UserAgg",
+          ...(opts.cmFilters ? { filters: opts.cmFilters } : {}),
+        },
+      ],
+    });
+  }
+
+  async function postBodies(props: unknown): Promise<Record<string, Record<string, unknown>>> {
+    connectRequest.mockImplementation(async (_s: unknown, o: { method: string }) =>
+      o.method === "GET" ? { apiName: "Model" } : {},
+    );
+    await SemanticModelResource.create(ctx(), props as never);
+    const byPath: Record<string, Record<string, unknown>> = {};
+    for (const call of connectRequest.mock.calls) {
+      const o = call[1] as { method: string; path: string; body?: Record<string, unknown> };
+      if (o.method === "POST" && o.body) byPath[o.path] = o.body;
+    }
+    return byPath;
+  }
+
+  const DOB_PATH = "/ssot/semantic/models/Model/data-objects";
+  const CM_PATH = "/ssot/semantic/models/Model/calculated-measurements";
+
+  it("omitting filters emits the unchanged `filters: []` wire default on both bodies", async () => {
+    const bodies = await postBodies(modelWith({}).props);
+    expect(bodies[DOB_PATH]!.filters).toEqual([]);
+    expect(bodies[CM_PATH]!.filters).toEqual([]);
+  });
+
+  it("an explicit empty `filters: []` hashes identically to omitting it (recreate-safe)", () => {
+    const omitted = SemanticModelResource.hash(modelWith({}).props);
+    const empty = SemanticModelResource.hash(modelWith({ dobFilters: [], cmFilters: [] }).props);
+    expect(empty).toBe(omitted);
+  });
+
+  it("a non-empty data-object filter is forwarded verbatim to the wire", async () => {
+    const filter = { field: "Status", operator: "In", values: ["Won", "Lost"] };
+    const bodies = await postBodies(modelWith({ dobFilters: [filter] }).props);
+    expect(bodies[DOB_PATH]!.filters).toEqual([filter]);
+  });
+
+  it("a non-empty calculated-measurement filter is forwarded verbatim to the wire", async () => {
+    const filter = { field: "Stage", operator: "Equals", values: ["Closed"] };
+    const bodies = await postBodies(modelWith({ cmFilters: [filter] }).props);
+    expect(bodies[CM_PATH]!.filters).toEqual([filter]);
+  });
+
+  it("a non-empty filter changes the hash (so it participates in drift detection)", () => {
+    const base = SemanticModelResource.hash(modelWith({}).props);
+    const filtered = SemanticModelResource.hash(
+      modelWith({ dobFilters: [{ field: "Status", operator: "In", values: ["Won"] }] }).props,
+    );
+    expect(filtered).not.toBe(base);
+  });
+});
+
 describe("SemanticModel prune registry", () => {
   it("is registered and sorts for delete before CalculatedInsight and DMO", () => {
     expect(RESOURCE_REGISTRY["SemanticModel"]).toBe(SemanticModelResource);

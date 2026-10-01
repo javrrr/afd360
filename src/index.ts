@@ -78,6 +78,7 @@ export type {
   SemanticRelationshipCriterion,
   SemanticCalculatedMeasurementProps,
   SemanticCardinality,
+  SemanticFilter,
 } from "./resources/semantic-model.js";
 export { Visualization } from "./resources/visualization.js";
 export type {
