@@ -210,13 +210,20 @@ export function registerDeploy(program: Command): void {
           switch (op.kind) {
             case "noop": {
               process.stdout.write(`  ${pc.gray("noop")}     ${c.uniqueId}\n`);
-              if (op.currentId) {
-                const existing = state.resources[c.uniqueId];
+              const existing = state.resources[c.uniqueId];
+              if (op.currentId && existing) {
                 deployed.set(c.uniqueId, {
                   salesforceId: op.currentId,
-                  apiName: existing?.apiName ?? c.id,
+                  apiName: existing.apiName ?? c.id,
                 });
+              } else if (op.currentId) {
+                deployed.set(c.uniqueId, { salesforceId: op.currentId, apiName: c.id });
               }
+              // Reconcile the RETAIN flag on the noop path too (see
+              // reconcileProtected). Pure state edit, not an org write, so
+              // `wrote` is untouched; the unconditional writeState in the
+              // finally persists it.
+              if (existing) reconcileProtected(existing, c);
               break;
             }
             case "adopt": {
@@ -340,6 +347,30 @@ export function registerDeploy(program: Command): void {
         }
       }
     });
+}
+
+/**
+ * Reconcile the RETAIN flag of an EXISTING state entry against the construct's
+ * current `protect()` status. Used on the `noop` deploy path.
+ *
+ * `stateEntry()` — the only other place `protected` is written — runs ONLY on
+ * create/recreate/adopt. A resource whose shape is unchanged deploys as a noop,
+ * which never rebuilds its state entry, so without this reconciliation the flag
+ * is frozen at whatever the last WRITE recorded. The consequence found in Phase
+ * 3 live validation: dropping `protect()` from an unchanged construct left a
+ * stale `protected: true` in state forever, making the resource permanently
+ * undeletable — and the "drop protect() to delete" hint a lie. Flipping protect
+ * ON for an unchanged construct had the symmetric gap.
+ *
+ * Mutates in place: sets `protected: true` when flagged, deletes the key when
+ * not (so a cleared flag leaves no residue). Pure state surgery — no org I/O.
+ */
+export function reconcileProtected(
+  entry: StateResource,
+  c: Construct & ResourceConstruct,
+): void {
+  if (isProtected(c)) entry.protected = true;
+  else delete entry.protected;
 }
 
 export function stateEntry(
