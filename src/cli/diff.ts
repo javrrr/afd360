@@ -4,6 +4,7 @@ import { loadApp } from "./load-config.js";
 import { getSession } from "../client/auth.js";
 import { createClient } from "../client/factory.js";
 import { readState } from "../core/state.js";
+import { applyMoves } from "../core/moves.js";
 import { topologicalSort } from "../core/graph.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
@@ -30,6 +31,7 @@ const LABELS: Record<OpKind, (s: string) => string> = {
 
 const ORPHAN_LABELS: Record<OrphanKind, (s: string) => string> = {
   prune: (s) => pc.red(s),
+  protected: (s) => pc.cyan(s),
   forget: (s) => pc.yellow(s),
   stale: (s) => pc.gray(s),
 };
@@ -55,6 +57,10 @@ export function registerDiff(program: Command): void {
       const ctx: ResourceContext = { client, session, orgAlias };
 
       const state = await readState(orgAlias, stack.id);
+      // Apply declared renames in-memory so the preview reflects a re-key
+      // (noop/recreate under the new id) rather than a spurious prune+create.
+      // diff is read-only; the re-key is persisted when `deploy` runs.
+      const movedApplied = applyMoves(state, stack.moved);
       const resources = collectResources(stack);
       const order = topologicalSort({
         nodes: resources.map((r) => r.uniqueId),
@@ -73,6 +79,9 @@ export function registerDiff(program: Command): void {
       );
 
       process.stdout.write(`${pc.bold("diff")} ${orgAlias} (${stack.id})\n`);
+      for (const m of movedApplied) {
+        process.stdout.write(`  ${pc.cyan("moved")}  ${m.from} ${pc.gray("→")} ${m.to}\n`);
+      }
 
       const ops = [];
       for (const uid of order) {

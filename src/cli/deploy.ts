@@ -13,6 +13,8 @@ import { topologicalSort } from "../core/graph.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
+import { isProtected } from "../core/construct.js";
+import { applyMoves } from "../core/moves.js";
 import {
   computeOp,
   summarizeOps,
@@ -71,6 +73,10 @@ export function registerDeploy(program: Command): void {
       const ctx: ResourceContext = { client, session, orgAlias };
 
       const state = await readState(orgAlias, stack.id);
+      // Apply declared renames (Stack `moved`) before planning so a renamed
+      // construct re-keys its state entry rather than orphaning the old id and
+      // creating a new one. Idempotent across deploys. Logged after the header.
+      const movedApplied = applyMoves(state, stack.moved);
       const resources = collectResources(stack);
       const order = topologicalSort({
         nodes: resources.map((r) => r.uniqueId),
@@ -89,6 +95,9 @@ export function registerDeploy(program: Command): void {
       );
 
       process.stdout.write(`${pc.bold("deploy")} ${orgAlias} (${stack.id})\n`);
+      for (const m of movedApplied) {
+        process.stdout.write(`  ${pc.cyan("moved")}  ${m.from} ${pc.gray("→")} ${m.to}\n`);
+      }
 
       // Blast-radius pre-check: compute ops once with the initial deployed
       // map so we can warn on cascading recreates before issuing any writes.
@@ -333,7 +342,7 @@ export function registerDeploy(program: Command): void {
     });
 }
 
-function stateEntry(
+export function stateEntry(
   c: Construct & ResourceConstruct,
   id: string,
   apiName: string,
@@ -358,6 +367,9 @@ function stateEntry(
   // non-empty, to keep leaf-resource entries clean.
   const deps = c.dependsOn.map((d) => d.uniqueId);
   if (deps.length > 0) entry.dependsOn = deps;
+  // Persist the RETAIN marker so orphan prune honors it once the construct is
+  // gone. Only when set, to keep entries clean.
+  if (isProtected(c)) entry.protected = true;
   return entry;
 }
 

@@ -94,3 +94,29 @@ export class Construct {
     this.children.push(child);
   }
 }
+
+/**
+ * Mark a resource construct as RETAINed — afd360 will never auto-delete it.
+ * Both `deploy --prune` and `destroy` SKIP a protected resource (reported as
+ * `skip (protected)`) and leave it on the org; the flag is persisted to state
+ * so orphan prune still honors it after the construct is removed from the
+ * manifest. To actually delete a protected resource, drop the `protect()` call
+ * (and redeploy, so state clears the flag) first.
+ *
+ * Sets the duck-typed `isProtected` marker on the instance — the same pattern
+ * `fromExisting` uses for `isExisting` — so it works across the src/dist
+ * module-graph boundary. Returns the construct for inline use:
+ * `const conn = protect(new Connection(stack, "Conn", { ... }));`
+ *
+ * Analog: CDK `RemovalPolicy.RETAIN`, Pulumi `retainOnDelete`, Terraform
+ * `prevent_destroy`.
+ */
+export function protect<T extends Construct>(construct: T): T {
+  (construct as { isProtected?: boolean }).isProtected = true;
+  return construct;
+}
+
+/** Read the `protect()` marker off a construct (duck-typed, cross-realm safe). */
+export function isProtected(construct: Construct): boolean {
+  return (construct as { isProtected?: boolean }).isProtected === true;
+}

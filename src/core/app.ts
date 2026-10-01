@@ -1,4 +1,5 @@
 import { Construct, type Scope, type Resource } from "./construct.js";
+import type { MovedEntry } from "./moves.js";
 
 /**
  * A ResourceConstruct wraps a Resource impl plus its authored props + dependsOn
@@ -114,14 +115,24 @@ export class App implements Scope {
 
 export interface StackProps {
   targetOrg: string;
+  /**
+   * Declared construct renames. Each `{ from, to }` tells afd360 that the
+   * resource tracked in state under `from` is the same one now authored under
+   * `to`, so it re-keys the state entry instead of pruning the old id and
+   * creating a new one. uniqueIds, as shown in `afd360 diff` / the state file.
+   * See {@link MovedEntry}. Idempotent — safe to leave in place across deploys.
+   */
+  moved?: readonly MovedEntry[];
 }
 
 export class Stack extends Construct {
   readonly targetOrg: string;
+  readonly moved: readonly MovedEntry[];
 
   constructor(scope: App, id: string, props: StackProps) {
     super(scope, id);
     this.targetOrg = props.targetOrg;
+    this.moved = props.moved ?? [];
   }
 }
 

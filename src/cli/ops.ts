@@ -268,12 +268,14 @@ export function buildDependentsMap(
 
 /**
  * Orphan classification for a state entry whose manifest construct was removed.
- *   - `prune`  — owned + live on the org; a `deploy --prune` would delete it.
- *   - `forget` — not owned (adopted / fromExisting / salesforceHome); never
- *                auto-deleted, must be dropped from state with `forget`.
- *   - `stale`  — no live resource (no salesforceId); state-only cruft to forget.
+ *   - `prune`     — owned + live on the org; a `deploy --prune` would delete it.
+ *   - `protected` — owned + live, but flagged `protect()` at its last deploy;
+ *                   `--prune` SKIPS it (RETAIN). Drop the protection to delete.
+ *   - `forget`    — not owned (adopted / fromExisting / salesforceHome); never
+ *                   auto-deleted, must be dropped from state with `forget`.
+ *   - `stale`     — no live resource (no salesforceId); state-only cruft.
  */
-export type OrphanKind = "prune" | "forget" | "stale";
+export type OrphanKind = "prune" | "protected" | "forget" | "stale";
 
 export interface Orphan {
   readonly uniqueId: string;
@@ -305,6 +307,7 @@ export function collectOrphans(
     let kind: OrphanKind;
     if (!entry.salesforceId) kind = "stale";
     else if (entry.owned === false) kind = "forget";
+    else if (entry.protected === true) kind = "protected";
     else kind = "prune";
     orphans.push({ uniqueId: uid, entry, kind });
   }
@@ -316,6 +319,8 @@ export function orphanNote(kind: OrphanKind): string {
   switch (kind) {
     case "prune":
       return "owned; `afd360 deploy --prune` would delete it";
+    case "protected":
+      return "owned but protected; `--prune` skips it (drop protect() to delete)";
     case "forget":
       return "not owned; run `afd360 forget` to untrack";
     case "stale":
