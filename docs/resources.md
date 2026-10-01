@@ -389,10 +389,13 @@ simply never emitted. DELETE by server id (`1AK…` prefix), swallows 404.
   while the viz points at it — so `Visualization` is slotted ahead of
   `SemanticModel` in `PRUNE_TYPE_PRIORITY` (teardown: Viz → SemanticModel →
   CI → DMO).
-- **LIVE-VERIFY (pending b8's end-to-end run of the construct):** the
-  `dataSource.id` resolution, the `visualSpecification.marks.panes` shape, and
-  the default `view` block are the three spots the construct guesses from the
-  captured contract; all are overridable via `visualSpecification` / `view`.
+- **Wire shapes (live-confirmed, v67.0):** `dataSource.id` is the model GET's
+  `.id` (the `2SM…` record id); `marks.panes` is a single object whose `type`
+  picks the chart (with a parallel `marks.headers` object); and `view` carries a
+  populated `viewSpecification` scaffold, not `{}`. Name-only `dataSource`
+  binding (id omitted) is unverified — the construct always resolves + sends the
+  id. All three are overridable via `visualSpecification` / `view` if a future
+  API version drifts (the viz surface is v67 while the model GET is v64).
 
 ---
 
