@@ -5,7 +5,12 @@ import type {
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, isNotFound } from "../client/retry.js";
+import {
+  retryOn,
+  retryOn5xx,
+  isReferencedPreconditionFailure,
+  isNotFound,
+} from "../client/retry.js";
 import { pollUntil } from "../core/poll.js";
 
 /**
@@ -198,7 +203,36 @@ export const DmoResource: Resource<DmoResourceProps, DmoOutput> = {
       // Other errors on the pre-check shouldn't mask delete attempts.
     }
     try {
-      await retryOn5xx(() => ctx.client.dataModelObjects.delete(fullName));
+      // Two-layer retry. INNER: baseline fast 5xx retry (the opaque-500
+      // transient the platform throws on many writes — short backoff). OUTER:
+      // the 412 "referenced in other features" precondition failure, on a
+      // deliberately SLOWER budget (6 attempts, 5s base, ×1.5 up to 30s ⇒ ~1
+      // min). When a DMO's dependents (CalculatedInsight / SearchIndex /
+      // semantic model) were *just* deleted — a recreate drain or a reverse-
+      // topo destroy/prune — the platform's reference graph can lag, so the
+      // DMO delete 412s even though the dependents are already gone. Correct
+      // delete ordering is enforced elsewhere (drain / reverse-topo); this
+      // closes the async gap by waiting for the reference to clear. Keeping the
+      // layers separate preserves the fast 5xx path (a 5xx exhausts the inner
+      // retry in ~3.5s, isn't a precondition failure, and rethrows straight
+      // out — so the opaque-500 verify-gone fallback below still runs promptly).
+      // See isReferencedPreconditionFailure for the full note.
+      await retryOn(
+        () => retryOn5xx(() => ctx.client.dataModelObjects.delete(fullName)),
+        isReferencedPreconditionFailure,
+        {
+          attempts: 6,
+          intervalMs: 5_000,
+          backoff: 1.5,
+          maxIntervalMs: 30_000,
+          onRetry: (_err, attempt, total) => {
+            process.stderr.write(
+              `  waiting for references to DMO "${fullName}" to clear before ` +
+                `delete (attempt ${attempt}/${total})…\n`,
+            );
+          },
+        },
+      );
     } catch (err) {
       if (isNotFound(err)) return;
       // Defensive: if DELETE 500s with INTERNAL_ERROR but a subsequent GET

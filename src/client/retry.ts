@@ -94,6 +94,56 @@ export function retryOn5xx<T>(
   return retryOn(fn, is5xx, opts);
 }
 
+/** Numeric HTTP status off an error, or undefined. */
+function statusOf(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const s = (err as { status?: unknown }).status;
+  return typeof s === "number" ? s : undefined;
+}
+
+/**
+ * A DMO's **fact table** materializes asynchronously *after* its DLO→DMO
+ * Mapping is created — the mapping POST returning 200 does NOT mean the fact
+ * table is queryable yet. A CalculatedInsight (or anything that validates its
+ * SQL against the fact table) created inside that window 400s with
+ * `ENTITY_SAVE_ERROR "Error getting FactTable <dmo>__dlm"` /
+ * `"Cannot find type for node <dmo>__dlm.<field>"`. The condition is purely
+ * transient: the identical create succeeds once the fact table lands —
+ * a live org live-observed ~90s on a live org (2026-10-01), confirming it's
+ * timing, not a bad definition. Correct ordering (CI after Mapping) is
+ * necessary but insufficient; this predicate lets the CI create *wait out*
+ * the materialization instead of aborting the deploy.
+ *
+ * Note: ordering is still enforced separately (CI dependsOn its DMOs'
+ * Mappings — see attachMappingToCalculatedInsights); this retry only closes
+ * the async gap between "mapping created" and "fact table queryable".
+ */
+export function isFactTableNotReady(err: unknown): boolean {
+  return (
+    errBodyIncludes(err, "Error getting FactTable") ||
+    errBodyIncludes(err, "Cannot find type for node")
+  );
+}
+
+/**
+ * The platform's reference graph propagates asynchronously *after* a dependent
+ * resource is deleted. Deleting a DMO whose CalculatedInsight / SearchIndex /
+ * semantic-model dependents were *just* deleted (e.g. a recreate drain, or a
+ * reverse-topo destroy/prune) can 412 with `MATCH_PRECONDITION_FAILED`
+ * ("...referenced in other features") because the reference hasn't cleared
+ * yet. Transient: a retry seconds later succeeds — a live org live-observed on
+ * a live org (2026-10-01). Deleting the dependents in the right order is
+ * necessary but insufficient; this predicate lets the parent delete wait for
+ * the reference to drop.
+ */
+export function isReferencedPreconditionFailure(err: unknown): boolean {
+  if (statusOf(err) === 412) return true;
+  return (
+    errBodyIncludes(err, "MATCH_PRECONDITION_FAILED") ||
+    errBodyIncludes(err, "referenced in other features")
+  );
+}
+
 /**
  * Shared "resource is already gone" predicate. Use inside `read()` to return
  * `null`, or inside `delete()` to swallow the error as idempotent success.

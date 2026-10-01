@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { retryOn, retryOn5xx, is5xx, isNotFound } from "../../src/client/retry.js";
+import {
+  retryOn,
+  retryOn5xx,
+  is5xx,
+  isNotFound,
+  isFactTableNotReady,
+  isReferencedPreconditionFailure,
+} from "../../src/client/retry.js";
 
 const fastOpts = { intervalMs: 1, jitter: 0 };
 
@@ -86,5 +93,84 @@ describe("isNotFound", () => {
     expect(isNotFound("nope")).toBe(false);
     expect(isNotFound({ status: 200 })).toBe(false);
     expect(isNotFound({ status: 400 })).toBe(false);
+  });
+});
+
+describe("isFactTableNotReady", () => {
+  it("matches the ENTITY_SAVE_ERROR fact-table 400 bodies (either phrasing)", () => {
+    expect(
+      isFactTableNotReady({
+        status: 400,
+        body: '[{"errorCode":"ENTITY_SAVE_ERROR","message":"Error getting FactTable ValLeadDmo__dlm"}]',
+      }),
+    ).toBe(true);
+    expect(
+      isFactTableNotReady({
+        status: 400,
+        message: "Cannot find type for node ValLeadDmo__dlm.Id__c",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated errors (so a genuinely bad CI definition still fails fast)", () => {
+    expect(isFactTableNotReady({ status: 400, message: "Invalid SQL expression" })).toBe(false);
+    expect(isFactTableNotReady({ status: 500, body: "INTERNAL_ERROR" })).toBe(false);
+    expect(isFactTableNotReady(null)).toBe(false);
+    expect(isFactTableNotReady("oops")).toBe(false);
+  });
+
+  it("drives retryOn to wait out the materialization lag then succeed", async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 400, message: "Error getting FactTable X__dlm" })
+      .mockResolvedValue("created");
+    const out = await retryOn(
+      fn,
+      (err) => is5xx(err) || isFactTableNotReady(err),
+      { ...fastOpts, attempts: 5 },
+    );
+    expect(out).toBe("created");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("isReferencedPreconditionFailure", () => {
+  it("matches a 412 by status alone", () => {
+    expect(isReferencedPreconditionFailure({ status: 412 })).toBe(true);
+  });
+
+  it("matches the MATCH_PRECONDITION_FAILED / 'referenced in other features' body", () => {
+    expect(
+      isReferencedPreconditionFailure({
+        status: 400,
+        body: '[{"errorCode":"MATCH_PRECONDITION_FAILED"}]',
+      }),
+    ).toBe(true);
+    expect(
+      isReferencedPreconditionFailure({
+        message: "DMO is referenced in other features and cannot be deleted",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated errors", () => {
+    expect(isReferencedPreconditionFailure({ status: 404 })).toBe(false);
+    expect(isReferencedPreconditionFailure({ status: 400, message: "bad request" })).toBe(false);
+    expect(isReferencedPreconditionFailure(null)).toBe(false);
+    expect(isReferencedPreconditionFailure("nope")).toBe(false);
+  });
+
+  it("drives retryOn to wait for the reference to clear then delete", async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 412, message: "referenced in other features" })
+      .mockRejectedValueOnce({ status: 412 })
+      .mockResolvedValue(undefined);
+    await retryOn(
+      fn,
+      (err) => is5xx(err) || isReferencedPreconditionFailure(err),
+      { ...fastOpts, attempts: 6 },
+    );
+    expect(fn).toHaveBeenCalledTimes(3);
   });
 });

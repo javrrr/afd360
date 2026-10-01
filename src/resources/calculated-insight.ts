@@ -2,7 +2,7 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, isNotFound } from "../client/retry.js";
+import { retryOn, retryOn5xx, is5xx, isFactTableNotReady, isNotFound } from "../client/retry.js";
 import type { DMO } from "./dmo.js";
 
 /**
@@ -161,11 +161,37 @@ export const CalculatedInsightResource: Resource<
     // CI create can take >30s server-side (SQL validation + schedule setup).
     // SDK's default 30s timeout aborts mid-flight; the baseline retry then
     // hits the partially-created CI. Bump to 120s per-call.
-    const result = await retryOn5xx(() =>
-      ctx.client.calculatedInsights.create(
-        body as Parameters<Data360Client["calculatedInsights"]["create"]>[0],
-        { timeout: 120_000 },
-      ),
+    //
+    // Retry policy: baseline 5xx PLUS the fact-table-not-ready 400
+    // (isFactTableNotReady). A CI validates against its DMOs' fact tables,
+    // which materialize asynchronously after the DLO→DMO Mapping is created.
+    // Ordering (CI after Mapping) is already enforced via dependsOn, but the
+    // mapping POST returning ≠ the fact table being queryable: there's a lag
+    // (~90s live-observed) during which the create 400s with "Error getting
+    // FactTable". Rather than abort the deploy, wait it out — generous budget
+    // (10 attempts, 15s base, ×1.5 up to 30s ⇒ ~4 min total) covers the
+    // materialization long tail. See isFactTableNotReady for the full note.
+    const result = await retryOn(
+      () =>
+        ctx.client.calculatedInsights.create(
+          body as Parameters<Data360Client["calculatedInsights"]["create"]>[0],
+          { timeout: 120_000 },
+        ),
+      (err) => is5xx(err) || isFactTableNotReady(err),
+      {
+        attempts: 10,
+        intervalMs: 15_000,
+        backoff: 1.5,
+        maxIntervalMs: 30_000,
+        onRetry: (err, attempt, total) => {
+          if (isFactTableNotReady(err)) {
+            process.stderr.write(
+              `  waiting for DMO fact table to materialize before creating ` +
+                `CalculatedInsight "${props.apiName}" (attempt ${attempt}/${total})…\n`,
+            );
+          }
+        },
+      },
     );
     return toOutput(result as never);
   },
