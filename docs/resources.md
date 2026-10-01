@@ -262,6 +262,87 @@ new SearchIndex(stack, "ArticlesIdx", {
 
 ---
 
+## SemanticModel
+
+Source: [`src/resources/semantic-model.ts`](../src/resources/semantic-model.ts)
+
+A Tableau Next semantic model over DMOs / CalculatedInsight outputs — the
+layer a Tableau Next workbook or an Agentforce agent queries. The
+data-360-sdk has no semantic-models service, so this construct rides a thin
+raw-REST seam (`src/client/rest.ts`) against **v64.0** `/ssot/semantic/models`
+(the Tableau viz layer sits on a *different* version, v67).
+
+```ts
+new SemanticModel(stack, "SalesModel", {
+  // apiName defaults to the construct id; label defaults to apiName.
+  dataObjects: [
+    {
+      apiName: "Orders",
+      source: ordersDmo,              // DMO construct → "Dmo" + __dlm; CalculatedInsight → "Cio" + __cio;
+                                      // a raw string requires `dataObjectType`.
+      dimensions: [
+        { apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text", isPrimaryKey: true },
+        // RECORDCURRENCY dimension — required whenever this object has a Currency measure:
+        { apiName: "Cur", dataObjectFieldName: "cdp_sys_record_currency__c",
+          dataType: "Text", semanticDataType: "RecordCurrency" },
+      ],
+      measures: [
+        { apiName: "Amount", dataObjectFieldName: "Amount__c", dataType: "Currency" },
+      ],
+    },
+  ],
+  relationships: [
+    {
+      apiName: "OrdersToAccounts",
+      cardinality: "OneToMany",
+      leftSemanticDefinitionApiName: "Accounts",   // data-object apiName
+      rightSemanticDefinitionApiName: "Orders",
+      // criteria reference DIMENSION apiNames, not raw columns:
+      criteria: [{ leftSemanticFieldApiName: "Id", rightSemanticFieldApiName: "AccountId" }],
+    },
+  ],
+  calculatedMeasurements: [
+    // Aggregate flavor — supply aggregationType; level/totalAggregationType auto-filled:
+    { apiName: "OrderCount", expression: "count([Orders])", aggregationType: "UserAgg" },
+    // Row-level flavor — OMIT aggregationType; reference members dotted:
+    // { apiName: "Net", expression: "[Orders.Gross] - [Orders.Tax]" },
+  ],
+});
+```
+
+Create issues a **4-step ordered POST** sequence, each sub-resource
+referencing the prior by `apiName` (no id remap): shell → `data-objects`
+(one per DMO/CI) → `relationships` → `calculated-measurements`, then a GET
+hydrate. DELETE cascades to all sub-resources and swallows 404. `update()`
+is unimplemented — v1 drift is delete-and-recreate (same policy as every
+other resource).
+
+- **Source wiring:** pass a `DMO` or `CalculatedInsight` construct as
+  `source` — afd360 infers `dataObjectName`/`dataObjectType` and auto-wires
+  `dependsOn`. A raw string (e.g. `"ssot__Account__dlm"`) requires an
+  explicit `dataObjectType`.
+- **Deploy ordering:** the model `dependsOn` its DMOs' **Mappings** (not just
+  the DMOs) — the fact table materializes only after the mapping runs.
+  Reciprocal `attachMappingToSemanticModels` wiring makes authoring order
+  irrelevant.
+- **Measure guard — Percent:** `dataType: "Percent"` on a *measure* is
+  rejected at construct time (the semantic layer refuses it). Model a native
+  Percent column as a dimension.
+- **Measure guard — Currency:** any Currency measure requires a sibling
+  dimension on the same data object flagged `semanticDataType:
+  "RecordCurrency"` over `cdp_sys_record_currency__c`, or the platform 400s
+  "missing a record currency field". See
+  [[currency-type-breaks-semantic-layer]].
+- **Cio data objects reject type coercion:** a measure's `storageDataType`
+  must equal the CI output field's native type.
+- **tableType** is `Standard` (NOT "Full"); **sentiment** accepts only
+  `SentimentTypeUpIsGood` today.
+- **Prune ordering:** a model HARD-BLOCKS deletion of the CIs/DMOs it
+  references (platform 400 `DELETE_FAILED`), so it is slotted ahead of
+  `CalculatedInsight` + `DMO` in `PRUNE_TYPE_PRIORITY` and torn down first.
+
+---
+
 ## Adopt vs. create vs. recreate
 
 When `afd360 deploy` processes a resource it picks one op per entry:
