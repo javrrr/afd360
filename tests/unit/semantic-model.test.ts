@@ -272,6 +272,150 @@ describe("SemanticModel construct — measure guards", () => {
   });
 });
 
+describe("SemanticModel construct — aggregationType guard", () => {
+  it("rejects a measure aggregationType of 'Avg' and points to 'Average'", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [
+                { apiName: "AvgAmt", dataObjectFieldName: "Amount__c", dataType: "Number", aggregationType: "Avg" },
+              ],
+            },
+          ],
+        }),
+    ).toThrow(/aggregationType "Avg" is invalid.*Use "Average"/s);
+  });
+
+  it("rejects 'Avg' on a calculated-measurement aggregationType", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+          ],
+          calculatedMeasurements: [{ apiName: "A", expression: "avg([Fact.X])", aggregationType: "Avg" }],
+        }),
+    ).toThrow(/aggregationType "Avg" is invalid/);
+  });
+
+  it("accepts 'Average' (the correct spelling)", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [
+                { apiName: "AvgAmt", dataObjectFieldName: "Amount__c", dataType: "Number", aggregationType: "Average" },
+              ],
+            },
+          ],
+        }),
+    ).not.toThrow();
+  });
+
+  it("accepts a Percentage measure (native-Percent column modeled correctly)", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [
+                {
+                  apiName: "Share",
+                  dataObjectFieldName: "MW_Percent__c",
+                  dataType: "Percentage",
+                  storageDataType: "Percentage",
+                  aggregationType: "Average",
+                },
+              ],
+            },
+          ],
+        }),
+    ).not.toThrow();
+  });
+
+  it("the Percent rejection now points to 'Percentage', not 'model as a dimension'", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [{ apiName: "Pct", dataObjectFieldName: "Pct__c", dataType: "Percent" }],
+            },
+          ],
+        }),
+    ).toThrow(/spell its dataType.*"Percentage"/s);
+  });
+});
+
+describe("SemanticModelResource.create — atomic rollback", () => {
+  beforeEach(() => {
+    connectRequest.mockReset();
+  });
+
+  it("rolls back the shell (DELETE) when a child POST fails, and rethrows the original error", async () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+    });
+    // shell POST ok; first data-objects POST 400s; DELETE (rollback) ok.
+    connectRequest.mockImplementation(async (_s: unknown, o: { method: string; path: string }) => {
+      if (o.method === "POST" && o.path.endsWith("/data-objects")) {
+        throw { status: 400, body: { message: "SemanticAuthoringError: bad field" } };
+      }
+      return {};
+    });
+
+    await expect(SemanticModelResource.create(ctx(), sm.props)).rejects.toMatchObject({ status: 400 });
+
+    const deletes = connectRequest.mock.calls.filter((c) => (c[1] as { method: string }).method === "DELETE");
+    expect(deletes).toHaveLength(1);
+    expect((deletes[0]![1] as { path: string }).path).toBe("/ssot/semantic/models/Model");
+  });
+
+  it("surfaces the original create error even if rollback DELETE also fails", async () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+    });
+    connectRequest.mockImplementation(async (_s: unknown, o: { method: string; path: string }) => {
+      if (o.method === "POST" && o.path.endsWith("/data-objects")) {
+        throw { status: 400, body: { message: "original" } };
+      }
+      // 403 (not 5xx, not 404): delete() rethrows immediately — no retry/backoff.
+      if (o.method === "DELETE") throw { status: 403, body: { message: "cleanup failed" } };
+      return {};
+    });
+    await expect(SemanticModelResource.create(ctx(), sm.props)).rejects.toMatchObject({
+      status: 400,
+      body: { message: "original" },
+    });
+  });
+});
+
 describe("SemanticModel construct — reciprocal Mapping wiring", () => {
   function ragStack(order: "mapping-first" | "model-first") {
     const app = new App();
