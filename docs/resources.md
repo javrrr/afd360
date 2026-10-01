@@ -343,6 +343,59 @@ other resource).
 
 ---
 
+## Visualization
+
+Source: [`src/resources/visualization.ts`](../src/resources/visualization.ts)
+
+A Tableau Next **visualization** — the chart/table rendered over a
+`SemanticModel`. Like SemanticModel it rides the raw-REST seam
+(`src/client/rest.ts`), here against **v67.0** `/tableau/visualizations`
+(the surface is version-gated: v64/v65 → `DOWNGRADE_VERSION_ERROR`).
+
+```ts
+new Visualization(stack, "WinRateChart", {
+  model: salesModel,               // SemanticModel construct (wires dependsOn) OR a model apiName string
+  workspace: { name: "Analytics", id: "1Dy..." },  // PRE-EXISTING container; afd360 never creates/deletes it
+  chartType: "Bar",               // → visualSpecification.marks.panes[].type; default "Bar"
+  fields: [
+    // objectName/fieldName are the model's SEMANTIC apiNames, NOT the __c columns:
+    { objectName: "Orders", fieldName: "Region", role: "Dimension", axis: "row" },
+    { objectName: "Orders", fieldName: "Amount", role: "Measure",   axis: "column" },
+  ],
+  // Escape hatches — supply a captured body if a generated default drifts:
+  // visualSpecification: { ... },   // emitted verbatim instead of the generated spec
+  // view: { ... },                  // (read-only id/name/isOriginal are never emitted)
+});
+```
+
+Create is a **single POST**, built fresh — the read-only fields the platform
+rejects on input (`id`, `createdBy`/`createdDate`/`lastModifiedBy`/
+`lastModifiedDate`, `permissions`, `sourceVersion`, `url`, `dataSource.url`,
+`workspace.{label,url}`, `fields.*.id`, `view.{id,name,isOriginal}`) are
+simply never emitted. DELETE by server id (`1AK…` prefix), swallows 404.
+
+- **Model binding is top-level `dataSource`** (`{ type:"SemanticModel", id,
+  name }`), NOT the workspace. The construct resolves the model's record id
+  (`2SM…`) by GET-ing the model at create time; if that GET surfaces no id it
+  falls back to a name-only binding.
+- **`workspace`** is a durable, pre-existing container referenced by
+  `{ id?, name }` (object, not a bare string). afd360 does not manage it.
+- **`fields` is an OBJECT keyed by slot id** (`F2`, `F3`, …) on the wire — the
+  construct assigns slot ids in author order (starting at `F2`) and routes each
+  to the `column`/`row` axis. A measure slot defaults `function: "UserAgg"` +
+  `displayCategory: "Continuous"`; a dimension gets `"Discrete"` and no
+  function. `objectName`/`fieldName` MUST be the model's semantic apiNames.
+- **Prune ordering:** a viz references its model, which can't be torn down
+  while the viz points at it — so `Visualization` is slotted ahead of
+  `SemanticModel` in `PRUNE_TYPE_PRIORITY` (teardown: Viz → SemanticModel →
+  CI → DMO).
+- **LIVE-VERIFY (pending b8's end-to-end run of the construct):** the
+  `dataSource.id` resolution, the `visualSpecification.marks.panes` shape, and
+  the default `view` block are the three spots the construct guesses from the
+  captured contract; all are overridable via `visualSpecification` / `view`.
+
+---
+
 ## Adopt vs. create vs. recreate
 
 When `afd360 deploy` processes a resource it picks one op per entry:
