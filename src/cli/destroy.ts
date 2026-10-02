@@ -7,6 +7,7 @@ import { createClient } from "../client/factory.js";
 import { readState, writeState } from "../core/state.js";
 import { applyMoves } from "../core/moves.js";
 import { reverseTopologicalSort, topologicalSort } from "../core/graph.js";
+import { ensureDloGone } from "../resources/data-stream.js";
 import { isResourceConstruct } from "../core/app.js";
 import type { ResourceConstruct, DeployedRef } from "../core/app.js";
 import type { Construct, ResourceContext } from "../core/construct.js";
@@ -38,7 +39,18 @@ export function registerDestroy(program: Command): void {
 
       const session = await getSession(orgAlias);
       const client = createClient(session);
-      const ctx: ResourceContext = { client, session, orgAlias };
+      // A DataStream's source DLO can't be deleted while a mapped DMO still
+      // references it, and that DMO is torn down later in the same reverse-topo
+      // pass (no dependsOn edge between them). So DataStream.delete registers
+      // its DLO here instead of trying (and failing) to delete it inline; we
+      // sweep the registered names after the loop, once every DMO is gone.
+      const deferredDloNames: string[] = [];
+      const ctx: ResourceContext = {
+        client,
+        session,
+        orgAlias,
+        deferDloCleanup: (name) => deferredDloNames.push(name),
+      };
 
       const state = await readState(orgAlias, stack.id);
       // Re-key any declared renames before planning the teardown, so a moved
@@ -145,20 +157,26 @@ export function registerDestroy(program: Command): void {
         state.lastDeployedAt = new Date().toISOString();
         await writeState(orgAlias, state);
       }
-      // TODO(dlo-sweep): a DataStream's own source DLO can be left orphaned
-      // when a mapped DMO is torn down LATER in this same reverse-topo pass
-      // (DataStream↔DMO have no dependsOn edge; the real link is DLO↔DMO via
-      // the Mapping). The SSOT DLO DELETE silently 204-no-ops while any
-      // dependent references it, so the in-stream retry in
-      // DataStreamResource.delete fires too early to land, and no automatic
-      // late-landing happens (live-confirmed a live org, 2026-10-02 — only a
-      // FRESH delete issued after the DMO was gone succeeded). The fix is a
-      // destroy-only post-loop sweep here, once every DMO is deleted: capture
-      // each owned DataStream's resolved DLO name BEFORE its delete (the
-      // record is gone afterward), then re-issue dataLakeObjects.delete for any
-      // that survive. Worst case the sweep no-ops → the existing warn still
-      // fires, so it's strictly best-effort. Pending a live IngestApi teardown
-      // to validate before landing.
+      // Post-loop DLO sweep. Every DataStream that was deleted above registered
+      // its source DLO in `deferredDloNames` (see ctx.deferDloCleanup). Now that
+      // the whole reverse-order loop is done — in particular every mapped DMO is
+      // gone — the DLO delete finally lands, so re-issue it here. This automates
+      // the manual DELETE that was previously the only remedy. Best-effort: a
+      // DLO that still won't clear gets a warn + manual-DELETE guidance rather
+      // than blocking teardown (which has otherwise completed).
+      for (const name of deferredDloNames) {
+        const gone = await ensureDloGone(ctx, name);
+        if (gone) {
+          process.stdout.write(`  ${pc.red("sweep")}  ${name} (backing DLO)\n`);
+        } else {
+          process.stderr.write(
+            `  warning: destroy left the backing DLO "${name}" on-org — the post-loop ` +
+              `sweep couldn't confirm its delete even after the dependent DMOs were removed. ` +
+              `Re-running destroy will NOT retry this (state is already cleared) — delete it ` +
+              `manually: DELETE /ssot/data-lake-objects/${name}\n`,
+          );
+        }
+      }
       // A protected entry is retained (kept in state + on-org), so "state
       // cleared" would be a lie when any survive. Report the honest residual.
       if (protectedCount > 0) {

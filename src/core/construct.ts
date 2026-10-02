@@ -10,6 +10,17 @@ export interface ResourceContext {
   readonly client: Data360Client;
   readonly session: Session;
   readonly orgAlias: string;
+  /**
+   * Set by `destroy` ONLY. When present, a resource whose owned data-lake
+   * object can't be torn down until a sibling that has no `dependsOn` edge is
+   * gone should register that DLO's live name here and SKIP its own inline
+   * cleanup — `destroy` sweeps the registered names in a post-loop pass once
+   * every dependent is deleted (so the delete finally lands). Undefined on the
+   * deploy/recreate path, where resources clean up inline. Today only
+   * DataStream uses it, for its source DLO vs. a mapped DMO (torn down later in
+   * the same reverse-topo pass; see cli/destroy.ts).
+   */
+  readonly deferDloCleanup?: (dloName: string) => void;
 }
 
 /**
