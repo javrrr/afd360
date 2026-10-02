@@ -561,7 +561,18 @@ describe("DataStreamResource.delete — already-gone tolerance", () => {
       await expect(p).resolves.toBeUndefined(); // best-effort: must NOT throw
       const emitted = stderr.mock.calls.map((c) => String(c[0])).join("");
       expect(emitted).toMatch(/left its backing DLO "KB__dll" on-org/);
+      // Lead with the manual DELETE — the live-proven remediation.
       expect(emitted).toMatch(/DELETE \/ssot\/data-lake-objects\/KB__dll/);
+      // The warn must say WHY (a referencing object, e.g. a mapped DMO, hasn't
+      // cleared) and must NOT promise a destroy re-run retries it — state is
+      // already cleared and the stream record is gone (the old "Re-run the
+      // teardown to retry" guidance was wrong).
+      expect(emitted).toMatch(/references it.*mapped DMO|mapped DMO.*references it|references it/i);
+      expect(emitted).toMatch(/NOT retry this/);
+      expect(emitted).not.toMatch(/Re-run the teardown to retry/);
+      // The unobserved "blocks the Connection delete with DEPENDENCY_EXISTS"
+      // claim is dropped (a live org's run deleted the Connection fine).
+      expect(emitted).not.toMatch(/DEPENDENCY_EXISTS/);
     } finally {
       stderr.mockRestore();
       vi.useRealTimers();

@@ -145,6 +145,20 @@ export function registerDestroy(program: Command): void {
         state.lastDeployedAt = new Date().toISOString();
         await writeState(orgAlias, state);
       }
+      // TODO(dlo-sweep): a DataStream's own source DLO can be left orphaned
+      // when a mapped DMO is torn down LATER in this same reverse-topo pass
+      // (DataStream↔DMO have no dependsOn edge; the real link is DLO↔DMO via
+      // the Mapping). The SSOT DLO DELETE silently 204-no-ops while any
+      // dependent references it, so the in-stream retry in
+      // DataStreamResource.delete fires too early to land, and no automatic
+      // late-landing happens (live-confirmed a live org, 2026-10-02 — only a
+      // FRESH delete issued after the DMO was gone succeeded). The fix is a
+      // destroy-only post-loop sweep here, once every DMO is deleted: capture
+      // each owned DataStream's resolved DLO name BEFORE its delete (the
+      // record is gone afterward), then re-issue dataLakeObjects.delete for any
+      // that survive. Worst case the sweep no-ops → the existing warn still
+      // fires, so it's strictly best-effort. Pending a live IngestApi teardown
+      // to validate before landing.
       // A protected entry is retained (kept in state + on-org), so "state
       // cleared" would be a lie when any survive. Report the honest residual.
       if (protectedCount > 0) {
