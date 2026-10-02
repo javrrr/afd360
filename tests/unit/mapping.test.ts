@@ -356,12 +356,15 @@ describe("MappingResource.create (IngestApi DLO name resolution)", () => {
 });
 
 describe("MappingResource.create (DLO-never-materialized timeout message)", () => {
-  it("rethrows the poll timeout as actionable 'ingest first' guidance", async () => {
+  it("rethrows the poll timeout as actionable provisioning-lag / re-run guidance", async () => {
     vi.useFakeTimers();
     try {
       const ctx = mockCtx();
       // Derived name resolves (fast path) but the DLO never exposes fields —
-      // the never-ingested IngestApi case. The readiness poll must time out.
+      // a provisioning lag. The readiness poll must time out. (NOT a
+      // never-ingested condition: afd360 connectors declare the DLO schema up
+      // front, so fields appear at stream-create — a live org corrected the
+      // original "push data first" framing on 2026-10-02.)
       (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
         fields: [],
       });
@@ -371,12 +374,14 @@ describe("MappingResource.create (DLO-never-materialized timeout message)", () =
         dataSpace: "default",
         fieldMappings: [{ source: "Id__c", target: "Id__c" }],
       });
-      const assertion = expect(p).rejects.toThrow(/materialize after the first ingest/);
+      const assertion = expect(p).rejects.toThrow(/provisioning lag|Re-run `afd360 deploy`/);
       // Drive the 180s poll budget to exhaustion under fake timers.
       await vi.advanceTimersByTimeAsync(200_000);
       await assertion;
       // The opaque poll message must NOT be what surfaces.
       await expect(p).rejects.not.toThrow(/pollUntil timed out/);
+      // And the retired "push data / first ingest" directive must be gone.
+      await expect(p).rejects.not.toThrow(/ingest/);
     } finally {
       vi.useRealTimers();
     }

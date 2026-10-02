@@ -254,11 +254,14 @@ async function resolveDloName(ctx: ResourceContext, derivedName: string): Promis
  * Defaults: 5s × 36 = 3 min budget — covers the long tail prior tooling observed.
  *
  * On timeout, rethrow with the actionable cause rather than the bare poll
- * message: for an **IngestApi** stream the DLO's fields only materialize after
- * the FIRST ingest (a live org live-confirmed), so a Mapping deploy against a
- * never-ingested stream will always time out here — the fix is to push data,
- * then redeploy. (A wrong DLO name is the other cause; `resolveDloName` handles
- * that upstream.)
+ * message. afd360's connectors all declare the DLO schema UP FRONT — IngestApi
+ * via its ConnectionSchema, S3/Snowflake via the stream's `sourceFields` — so
+ * the DLO's fields materialize at stream-CREATE, not on first ingest
+ * (a live org live-confirmed 2026-10-02: a pre-ingest IngestApi DLO already
+ * exposes all its schema fields at rowcount 0). A timeout here therefore means
+ * a provisioning lag (the DLO is still settling) or a wrong DLO name (the other
+ * cause; `resolveDloName` handles that upstream) — NOT a missing ingest. The
+ * fix is to re-run deploy, not to push data.
  */
 async function waitForDloDiscoverable(
   ctx: ResourceContext,
@@ -281,9 +284,11 @@ async function waitForDloDiscoverable(
     if (err instanceof PollTimeoutError) {
       throw new Error(
         `DLO "${dloName}" never exposed any fields within ${Math.round(err.elapsedMs / 1000)}s, ` +
-          `so the Mapping can't be created. For an IngestApi stream the DLO's fields only ` +
-          `materialize after the first ingest — push data to the stream, then redeploy. ` +
-          `(If this is an S3/Snowflake stream, the DLO may still be provisioning; retry shortly.)`,
+          `so the Mapping can't be created. afd360's connectors declare the DLO schema up front ` +
+          `(IngestApi via ConnectionSchema, S3/Snowflake via the stream's sourceFields), so the ` +
+          `fields should appear at stream-create — a timeout here is most likely a provisioning ` +
+          `lag or a stream still settling. Re-run \`afd360 deploy\` to retry. (If it persists, ` +
+          `confirm the stream deployed cleanly and that the resolved DLO name is correct.)`,
       );
     }
     throw err;
