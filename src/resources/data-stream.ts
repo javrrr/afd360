@@ -7,6 +7,7 @@ import { Construct, type Resource } from "../core/construct.js";
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn, retryOn5xx, errBodyIncludes, is5xx, isNotFound } from "../client/retry.js";
+import { pollUntil, PollTimeoutError } from "../core/poll.js";
 import { Connection } from "./connection.js";
 import { ConnectionSchema } from "./connection-schema.js";
 
@@ -879,22 +880,59 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
       }
     }
 
-    // Post-delete: verify DLO is actually gone. If not, the Connect API
-    // cascade silently left an orphan — attempt an explicit DLO delete so
-    // downstream Connection.delete doesn't trip on DEPENDENCY_EXISTS.
+    // Post-delete: verify the DLO is actually gone, and retry the explicit
+    // delete until it takes. The cascade (shouldDeleteDataLakeObject:true)
+    // returns 204 but SILENTLY NO-OPs the DLO delete — live-confirmed
+    // DETERMINISTIC (a live org, 2026-10-02, reproduced on back-to-back
+    // destroys): both the cascade AND a one-shot explicit delete 204 against
+    // the CORRECT name (dloName is populated at delete time) yet leave the
+    // stream's own source DLO as an orphan. It's deletable afterward — a
+    // manual DELETE post-teardown returns 204 — so re-issuing the delete a
+    // moment later makes it take (same async-gate theme as the DMO
+    // MATCH_PRECONDITION retry: DELETE-returns != operation-landed). This is
+    // scoped to the stream's OWN source DLO; the SearchIndex's derived DLOs
+    // are torn down cleanly by the index delete (NOT a cross-resource ordering
+    // issue — an earlier lagging-reference theory was refuted). So we poll
+    // GET→404, re-issuing the delete each attempt until it lands.
+    // Best-effort: if the budget elapses we WARN (not silently) and return
+    // rather than block teardown — a surviving orphan is the user's to clean
+    // up, not fatal to the destroy.
     if (dloName) {
+      const name = dloName;
       try {
-        await ctx.client.dataLakeObjects.get(dloName);
-        // Still there — try to delete it directly.
-        await retryOn5xx(() =>
-          ctx.client.dataLakeObjects.delete(dloName!),
+        await pollUntil<true>(
+          async () => {
+            // Gone yet?
+            try {
+              await ctx.client.dataLakeObjects.get(name);
+            } catch (err) {
+              if (isNotFound(err)) return true; // confirmed gone — done.
+              return null; // transient read error — keep polling, don't abort.
+            }
+            // Still present — (re-)issue the delete; the next poll verifies.
+            try {
+              await retryOn5xx(() => ctx.client.dataLakeObjects.delete(name));
+            } catch (err) {
+              if (isNotFound(err)) return true; // raced to gone.
+              // Delete deferred/failed (e.g. still referenced) — keep polling.
+            }
+            return null;
+          },
+          { intervalMs: 5_000, timeoutMs: 60_000 },
         );
       } catch (err) {
+        if (err instanceof PollTimeoutError) {
+          process.stderr.write(
+            `  warning: DataStream teardown left its backing DLO "${name}" on-org — the ` +
+              `cascade delete deferred because a dependent reference had not cleared within ` +
+              `${Math.round(err.elapsedMs / 1000)}s. This can block a later Connection delete ` +
+              `with DEPENDENCY_EXISTS. Re-run the teardown to retry, or delete it manually: ` +
+              `DELETE /ssot/data-lake-objects/${name}\n`,
+          );
+          return;
+        }
         if (isNotFound(err)) return; // already gone, good.
-        // If the DLO has other mapping references we can't clean, surface the
-        // original error for the user — but only if a destroy path is actually
-        // running. For now swallow silently; M9 (teardown hardening) can add
-        // more sophisticated orphan handling.
+        // Any other error: don't block teardown.
       }
     }
   },

@@ -510,6 +510,63 @@ describe("DataStreamResource.delete — already-gone tolerance", () => {
     client.dataLakeObjects.get.mockRejectedValue({ status: 404 });  // DLO also gone
     await expect(DataStreamResource.delete(ctx, "X")).resolves.toBeUndefined();
   });
+
+  it("re-issues the DLO delete until GET confirms it's gone (deferred cascade no-op)", async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = mockDeleteCtx();
+      const client = ctx.client as unknown as {
+        dataStreams: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+        dataLakeObjects: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+      };
+      client.dataStreams.get.mockResolvedValue({
+        name: "X", recordId: "X", dataLakeObjectInfo: { name: "KB__dll" },
+      });
+      client.dataStreams.delete.mockResolvedValue(undefined); // cascade 204 but no-op's the DLO
+      // DLO still present on the first verify (the cascade deferred), gone on
+      // the second verify after the explicit delete is re-issued.
+      client.dataLakeObjects.get
+        .mockResolvedValueOnce({ name: "KB__dll" })
+        .mockRejectedValueOnce({ status: 404 });
+      client.dataLakeObjects.delete.mockResolvedValue(undefined);
+
+      const p = DataStreamResource.delete(ctx, "X");
+      await vi.advanceTimersByTimeAsync(10_000); // cover the 5s poll interval
+      await expect(p).resolves.toBeUndefined();
+      expect(client.dataLakeObjects.delete).toHaveBeenCalledTimes(1);
+      expect(client.dataLakeObjects.get).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("warns (not silently) and returns without throwing if the DLO never clears within budget", async () => {
+    vi.useFakeTimers();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const ctx = mockDeleteCtx();
+      const client = ctx.client as unknown as {
+        dataStreams: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+        dataLakeObjects: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+      };
+      client.dataStreams.get.mockResolvedValue({
+        name: "X", recordId: "X", dataLakeObjectInfo: { name: "KB__dll" },
+      });
+      client.dataStreams.delete.mockResolvedValue(undefined);
+      client.dataLakeObjects.get.mockResolvedValue({ name: "KB__dll" }); // always present
+      client.dataLakeObjects.delete.mockResolvedValue(undefined); // 204 but perpetually no-op's
+
+      const p = DataStreamResource.delete(ctx, "X");
+      await vi.advanceTimersByTimeAsync(70_000); // exhaust the 60s budget
+      await expect(p).resolves.toBeUndefined(); // best-effort: must NOT throw
+      const emitted = stderr.mock.calls.map((c) => String(c[0])).join("");
+      expect(emitted).toMatch(/left its backing DLO "KB__dll" on-org/);
+      expect(emitted).toMatch(/DELETE \/ssot\/data-lake-objects\/KB__dll/);
+    } finally {
+      stderr.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("quirk A1 — errBodyIncludes('Illegal argument') predicate", () => {
