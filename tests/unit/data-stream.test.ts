@@ -5,6 +5,7 @@ import {
   DataStream,
   DataStreamResource,
   ExistingDataStreamResource,
+  ensureDloGone,
 } from "../../src/resources/data-stream.js";
 import { errBodyIncludes } from "../../src/client/retry.js";
 import type { ResourceContext } from "../../src/core/construct.js";
@@ -540,7 +541,10 @@ describe("DataStreamResource.delete — already-gone tolerance", () => {
     }
   });
 
-  it("warns (not silently) and returns without throwing if the DLO never clears within budget", async () => {
+  it("warns (not silently) on the inline path if the DLO never clears within budget", async () => {
+    // No ctx.deferDloCleanup → the deploy/recreate inline best-effort path.
+    // (On `destroy` the DLO is instead handed to the post-loop sweep; see
+    // destroy.test.ts.)
     vi.useFakeTimers();
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
@@ -560,21 +564,91 @@ describe("DataStreamResource.delete — already-gone tolerance", () => {
       await vi.advanceTimersByTimeAsync(70_000); // exhaust the 60s budget
       await expect(p).resolves.toBeUndefined(); // best-effort: must NOT throw
       const emitted = stderr.mock.calls.map((c) => String(c[0])).join("");
-      expect(emitted).toMatch(/left its backing DLO "KB__dll" on-org/);
-      // Lead with the manual DELETE — the live-proven remediation.
+      expect(emitted).toMatch(/couldn't delete the DataStream's backing DLO "KB__dll"/);
+      // Point at the manual DELETE — the live-proven remediation.
       expect(emitted).toMatch(/DELETE \/ssot\/data-lake-objects\/KB__dll/);
-      // The warn must say WHY (a referencing object, e.g. a mapped DMO, hasn't
-      // cleared) and must NOT promise a destroy re-run retries it — state is
-      // already cleared and the stream record is gone (the old "Re-run the
-      // teardown to retry" guidance was wrong).
+      // Say WHY (a referencing object, e.g. a mapped DMO, hasn't cleared).
       expect(emitted).toMatch(/references it.*mapped DMO|mapped DMO.*references it|references it/i);
-      expect(emitted).toMatch(/NOT retry this/);
+      expect(emitted).toMatch(/manually once nothing references it/);
+      // Retired phrasings must stay gone.
       expect(emitted).not.toMatch(/Re-run the teardown to retry/);
-      // The unobserved "blocks the Connection delete with DEPENDENCY_EXISTS"
-      // claim is dropped (a live org's run deleted the Connection fine).
       expect(emitted).not.toMatch(/DEPENDENCY_EXISTS/);
     } finally {
       stderr.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers the DLO to ctx.deferDloCleanup (destroy sweep) instead of deleting inline", async () => {
+    const ctx = mockDeleteCtx();
+    const deferred: string[] = [];
+    (ctx as { deferDloCleanup?: (n: string) => void }).deferDloCleanup = (n) => deferred.push(n);
+    const client = ctx.client as unknown as {
+      dataStreams: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+      dataLakeObjects: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+    };
+    client.dataStreams.get.mockResolvedValue({
+      name: "X", recordId: "X", dataLakeObjectInfo: { name: "KB__dll" },
+    });
+    client.dataStreams.delete.mockResolvedValue(undefined);
+
+    await expect(DataStreamResource.delete(ctx, "X")).resolves.toBeUndefined();
+    // Registered for the sweep; NOT deleted inline (would no-op anyway — the
+    // blocking DMO is still present mid-pass).
+    expect(deferred).toEqual(["KB__dll"]);
+    expect(client.dataLakeObjects.get).not.toHaveBeenCalled();
+    expect(client.dataLakeObjects.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureDloGone (destroy post-loop sweep engine)", () => {
+  function ctxWith(dlo: { get: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> }): ResourceContext {
+    return {
+      client: { dataLakeObjects: dlo } as unknown as ResourceContext["client"],
+      session: {
+        alias: "x", username: "u", orgId: "00D",
+        instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
+      },
+      orgAlias: "x",
+    };
+  }
+
+  it("returns true immediately when the DLO is already gone (GET 404s)", async () => {
+    const get = vi.fn().mockRejectedValue({ status: 404 });
+    const del = vi.fn();
+    await expect(ensureDloGone(ctxWith({ get, delete: del }), "KB__dll")).resolves.toBe(true);
+    expect(del).not.toHaveBeenCalled(); // nothing to delete
+  });
+
+  it("re-issues the delete after the DMO is gone, then confirms (the sweep's whole point)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Present on the first verify, 404 on the second — i.e. the fresh delete
+      // the sweep issues (now that every DMO is deleted) finally lands.
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce({ name: "KB__dll" })
+        .mockRejectedValueOnce({ status: 404 });
+      const del = vi.fn().mockResolvedValue(undefined);
+      const p = ensureDloGone(ctxWith({ get, delete: del }), "KB__dll");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(p).resolves.toBe(true);
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns false (never throws) if the DLO never clears within budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const get = vi.fn().mockResolvedValue({ name: "KB__dll" }); // always present
+      const del = vi.fn().mockResolvedValue(undefined); // 204 but perpetual no-op
+      const p = ensureDloGone(ctxWith({ get, delete: del }), "KB__dll", { timeoutMs: 30_000 });
+      await vi.advanceTimersByTimeAsync(40_000);
+      await expect(p).resolves.toBe(false);
+    } finally {
       vi.useRealTimers();
     }
   });

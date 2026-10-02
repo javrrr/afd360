@@ -3,7 +3,7 @@ import type {
   DataObjectInputRepresentation,
   RefreshConfigInputRepresentation,
 } from "data-360-sdk";
-import { Construct, type Resource } from "../core/construct.js";
+import { Construct, type Resource, type ResourceContext } from "../core/construct.js";
 import type { Stack, DeployedRef } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn, retryOn5xx, errBodyIncludes, is5xx, isNotFound } from "../client/retry.js";
@@ -721,6 +721,53 @@ function inferConnectorType(conn: Connection): DataStreamConnectorType {
   );
 }
 
+/**
+ * Poll until the data-lake object `name` is confirmed gone, re-issuing the
+ * explicit delete on each attempt. Returns true once GET 404s (or a delete
+ * races to 404), false if the budget elapses or an unexpected error leaves it
+ * unconfirmed. Never throws — teardown must not be blocked by a stubborn DLO.
+ *
+ * Shared by two callers:
+ *  - `DataStreamResource.delete` inline (deploy/recreate path), as cheap
+ *    best-effort for streams whose DLO has no blocking dependent.
+ *  - `destroy`'s post-loop DLO sweep, which runs AFTER every dependent DMO is
+ *    deleted — so here the re-issued delete finally lands (the whole reason the
+ *    inline attempt no-ops: a mapped DMO is torn down later in the same pass).
+ */
+export async function ensureDloGone(
+  ctx: ResourceContext,
+  name: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<boolean> {
+  try {
+    await pollUntil<true>(
+      async () => {
+        // Gone yet?
+        try {
+          await ctx.client.dataLakeObjects.get(name);
+        } catch (err) {
+          if (isNotFound(err)) return true; // confirmed gone — done.
+          return null; // transient read error — keep polling, don't abort.
+        }
+        // Still present — (re-)issue the delete; the next poll verifies.
+        try {
+          await retryOn5xx(() => ctx.client.dataLakeObjects.delete(name));
+        } catch (err) {
+          if (isNotFound(err)) return true; // raced to gone.
+          // Delete deferred/failed (e.g. still referenced) — keep polling.
+        }
+        return null;
+      },
+      { intervalMs: 5_000, timeoutMs: opts.timeoutMs ?? 60_000 },
+    );
+    return true;
+  } catch (err) {
+    if (isNotFound(err)) return true; // already gone, good.
+    if (err instanceof PollTimeoutError) return false;
+    return false; // any other error — unconfirmed; don't throw, don't block.
+  }
+}
+
 export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOutput> = {
   type: "DataStream",
   surface: "connect",
@@ -880,61 +927,41 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
       }
     }
 
-    // Post-delete: best-effort cleanup of the stream's OWN source DLO. The
-    // cascade (shouldDeleteDataLakeObject:true) returns 204 but SILENTLY NO-OPs
-    // the DLO delete whenever another object still references it — and a mapped
-    // DMO is exactly such a dependent. In a full `destroy` that DMO is torn
-    // down LATER in the same reverse-topo pass: DataStream and DMO have no
-    // dependsOn edge (the real link is DLO↔DMO via the Mapping, not a construct
-    // edge), so their relative order is arbitrary and the stream often goes
-    // first. At THIS point the DLO delete therefore can't land no matter how
-    // long we retry — live-confirmed (a live org, 2026-10-02): the DLO was still
-    // present minutes after this ran, and only a FRESH delete issued AFTER the
-    // DMO was gone succeeded (the earlier 204s did not land late). The proper
-    // fix for that case is a destroy-only post-loop DLO sweep that runs once
-    // every DMO is deleted (see the TODO in cli/destroy.ts). This loop stays as
-    // cheap best-effort for streams with NO dependent DMO (or a genuine
-    // transient platform settle), where re-issuing the delete a moment later
-    // does make it take. We poll GET→404, re-issuing the delete each attempt;
-    // if the budget elapses we WARN (not silently) and return rather than block
-    // teardown — a surviving orphan is the user's to clean up, not fatal.
+    // Post-delete: clean up the stream's OWN source DLO. The cascade
+    // (shouldDeleteDataLakeObject:true) returns 204 but SILENTLY NO-OPs the DLO
+    // delete whenever another object still references it — and a mapped DMO is
+    // exactly such a dependent.
+    //
+    // In a full `destroy` that DMO is torn down LATER in the same reverse-topo
+    // pass: DataStream and DMO have no dependsOn edge (the real link is DLO↔DMO
+    // via the Mapping, not a construct edge), so their relative order is
+    // arbitrary and the stream often goes first. At THIS point the DLO delete
+    // therefore can't land no matter how long we retry — live-confirmed
+    // (a live org, 2026-10-02): the DLO was still present minutes after this ran,
+    // and only a FRESH delete issued AFTER the DMO was gone succeeded (the
+    // earlier 204s did not land late). So `destroy` sets `ctx.deferDloCleanup`;
+    // we register the DLO there and let its post-loop sweep delete it once every
+    // DMO is gone (see cli/destroy.ts).
+    //
+    // Off the destroy path (deploy/recreate, or any caller without the sweep),
+    // fall back to inline best-effort cleanup — right for streams with no
+    // dependent DMO (or a transient platform settle), where re-issuing the
+    // delete a moment later does make it take. If it never lands we WARN (not
+    // silently) and return rather than block — a surviving orphan is the user's
+    // to clean up, not fatal.
     if (dloName) {
-      const name = dloName;
-      try {
-        await pollUntil<true>(
-          async () => {
-            // Gone yet?
-            try {
-              await ctx.client.dataLakeObjects.get(name);
-            } catch (err) {
-              if (isNotFound(err)) return true; // confirmed gone — done.
-              return null; // transient read error — keep polling, don't abort.
-            }
-            // Still present — (re-)issue the delete; the next poll verifies.
-            try {
-              await retryOn5xx(() => ctx.client.dataLakeObjects.delete(name));
-            } catch (err) {
-              if (isNotFound(err)) return true; // raced to gone.
-              // Delete deferred/failed (e.g. still referenced) — keep polling.
-            }
-            return null;
-          },
-          { intervalMs: 5_000, timeoutMs: 60_000 },
+      if (ctx.deferDloCleanup) {
+        ctx.deferDloCleanup(dloName);
+        return;
+      }
+      const gone = await ensureDloGone(ctx, dloName);
+      if (!gone) {
+        process.stderr.write(
+          `  warning: couldn't delete the DataStream's backing DLO "${dloName}". Its delete ` +
+            `only lands once every object that references it (e.g. a mapped DMO) is gone, and ` +
+            `that hasn't cleared. Delete it manually once nothing references it: ` +
+            `DELETE /ssot/data-lake-objects/${dloName}\n`,
         );
-      } catch (err) {
-        if (err instanceof PollTimeoutError) {
-          process.stderr.write(
-            `  warning: DataStream teardown left its backing DLO "${name}" on-org. Its ` +
-              `delete can only land once every object that references it (e.g. a mapped DMO) ` +
-              `is gone, and that didn't clear within ${Math.round(err.elapsedMs / 1000)}s. The ` +
-              `rest of the teardown continued. Re-running destroy will NOT retry this (state ` +
-              `is already cleared and the stream record is gone) — delete it manually: ` +
-              `DELETE /ssot/data-lake-objects/${name}\n`,
-          );
-          return;
-        }
-        if (isNotFound(err)) return; // already gone, good.
-        // Any other error: don't block teardown.
       }
     }
   },
