@@ -31,6 +31,7 @@ function mockCtx(): ResourceContext {
     client: {
       dataStreams: {
         list: vi.fn(),
+        listAll: vi.fn(),
         get: vi.fn(),
         create: vi.fn(),
         delete: vi.fn(),
@@ -46,6 +47,13 @@ function mockCtx(): ResourceContext {
       accessToken: "tok",
     },
     orgAlias: "dev-org",
+  };
+}
+
+/** Wrap an array as the async generator `dataStreams.listAll` returns. */
+function asStreamPages<T>(items: T[]): () => AsyncGenerator<T, void, undefined> {
+  return async function* () {
+    for (const item of items) yield item;
   };
 }
 
@@ -799,18 +807,18 @@ describe("SalesforceHome (same-org CRM / Home) DataStream", () => {
     // misses it and the op is misclassified `create` (a diff/reality mismatch).
     const { home, stream } = buildHomeFixture("Account", "Profile");
     const ctx = mockCtx();
-    const list = (ctx.client.dataStreams as unknown as { list: ReturnType<typeof vi.fn> }).list;
+    const listAll = (ctx.client.dataStreams as unknown as { listAll: ReturnType<typeof vi.fn> }).listAll;
     const get = (ctx.client.dataStreams as unknown as { get: ReturnType<typeof vi.fn> }).get;
-    list.mockResolvedValue({
-      dataStreams: [
+    listAll.mockImplementation(
+      asStreamPages([
         {
           name: "Account_Home",
           recordId: "1dsbm000001PqXVAA0",
           label: "Account Home",
           dataLakeObjectInfo: { name: "Account_Home__dll" },
         },
-      ],
-    });
+      ]),
+    );
     get.mockResolvedValue({ name: "Account_Home", recordId: "1dsbm000001PqXVAA0" });
     const deployed = new Map([
       [home.uniqueId, { salesforceId: "0hMbm000002SghVEAS", apiName: "SalesforceDotCom_Home" }],
@@ -819,6 +827,37 @@ describe("SalesforceHome (same-org CRM / Home) DataStream", () => {
     // Found the platform stream via the correct DLO name, and read it by id.
     expect(get).toHaveBeenCalledWith("1dsbm000001PqXVAA0");
     expect(found).not.toBeNull();
+  });
+
+  it("finds a stream past the server's ~10-item list cap (paginates via listAll)", async () => {
+    // Regression: `GET /ssot/data-streams` caps a single page at ~10 results
+    // (a large `limit`/`batchSize` does NOT widen it). A single-page `list()`
+    // misses a stream that sorts past the cap, so an existing stream (e.g. left
+    // by a lost-state partial deploy) gets misclassified as `create` and the
+    // platform 400s "EDTO already in use". lookupByProps must page through all
+    // results — here the target KB__dll stream is the 15th item.
+    const { stream } = buildApp();
+    const ctx = mockCtx();
+    const listAll = (ctx.client.dataStreams as unknown as { listAll: ReturnType<typeof vi.fn> }).listAll;
+    const get = (ctx.client.dataStreams as unknown as { get: ReturnType<typeof vi.fn> }).get;
+    const decoys = Array.from({ length: 14 }, (_, i) => ({
+      name: `Other${i}`,
+      recordId: `rec-${i}`,
+      dataLakeObjectInfo: { name: `Other${i}__dll` },
+    }));
+    const target = {
+      name: "DocsStream",
+      recordId: "rec-target",
+      dataLakeObjectInfo: { name: "KB__dll" },
+    };
+    listAll.mockImplementation(asStreamPages([...decoys, target]));
+    get.mockResolvedValue({ name: "DocsStream", recordId: "rec-target", dataLakeObjectInfo: { name: "KB__dll" } });
+    const found = await DataStreamResource.lookupByProps!(ctx, {
+      ...stream.props,
+      connectionName: "DocsIngest_abc",
+    });
+    expect(found).not.toBeNull();
+    expect(get).toHaveBeenCalledWith("rec-target");
   });
 
   it("rejects a freshly-created (non-referenced) SalesforceDotCom connection", () => {
@@ -890,14 +929,14 @@ describe("DataStream.fromExisting (reference lifecycle)", () => {
   it("create adopts the pre-existing stream by DLO name — never POSTs", async () => {
     const { home, stream } = buildRef("Account");
     const ctx = mockCtx();
-    const list = (ctx.client.dataStreams as unknown as { list: ReturnType<typeof vi.fn> }).list;
+    const listAll = (ctx.client.dataStreams as unknown as { listAll: ReturnType<typeof vi.fn> }).listAll;
     const get = (ctx.client.dataStreams as unknown as { get: ReturnType<typeof vi.fn> }).get;
     const create = (ctx.client.dataStreams as unknown as { create: ReturnType<typeof vi.fn> }).create;
-    list.mockResolvedValue({
-      dataStreams: [
+    listAll.mockImplementation(
+      asStreamPages([
         { name: "Account_Home", recordId: "1dsPqXVAA0", dataLakeObjectInfo: { name: "Account_Home__dll" } },
-      ],
-    });
+      ]),
+    );
     get.mockResolvedValue({ name: "Account_Home", recordId: "1dsPqXVAA0" });
     const deployed = new Map([
       [home.uniqueId, { salesforceId: "0hM", apiName: "SalesforceDotCom_Home" }],
@@ -910,8 +949,8 @@ describe("DataStream.fromExisting (reference lifecycle)", () => {
   it("create throws when no matching pre-existing stream is present", async () => {
     const { home, stream } = buildRef("Ghost");
     const ctx = mockCtx();
-    const list = (ctx.client.dataStreams as unknown as { list: ReturnType<typeof vi.fn> }).list;
-    list.mockResolvedValue({ dataStreams: [] });
+    const listAll = (ctx.client.dataStreams as unknown as { listAll: ReturnType<typeof vi.fn> }).listAll;
+    listAll.mockImplementation(asStreamPages([]));
     const deployed = new Map([
       [home.uniqueId, { salesforceId: "0hM", apiName: "SalesforceDotCom_Home" }],
     ]);

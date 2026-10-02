@@ -796,24 +796,12 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
   },
 
   async lookupByProps(ctx, props): Promise<DataStreamOutput | null> {
-    // Scope by connectionName to keep the list small.
-    const result = await ctx.client.dataStreams.list({
-      connectionName: props.connectionName,
-      batchSize: 200,
-    });
     // IngestApi rewrites both name and label on create (authored "C3Stream"
     // becomes "C3Stream_afd360_c3_kb_F6DAB3FB" / "C3Stream-afd360_c3_kb").
     // The stable identifier is the (connection, sourceObject) pair — each
     // source object has exactly one stream per connection. Match on the
     // DLO name derived from sourceObject, since the live list surfaces that.
-    const streams = (result as {
-      dataStreams?: Array<{
-        name?: string;
-        recordId?: string;
-        label?: string;
-        dataLakeObjectInfo?: { name?: string };
-      }>;
-    }).dataStreams;
+    //
     // DLO naming is connector-specific — SalesforceHome uses `<Object>_Home__dll`
     // (with a trailing __c stripped), NOT `<Object>__dll`. Using the wrong form
     // here makes adopt-detection miss a pre-existing Home stream (e.g. the
@@ -824,16 +812,34 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
       props.connectorType === "SalesforceHome"
         ? salesforceHomeDloName(props.sourceObject)
         : `${props.sourceObject}__dll`;
-    const match = streams?.find((s) => {
+    const matches = (s: {
+      name?: string;
+      label?: string;
+      dataLakeObjectInfo?: { name?: string };
+    }): boolean => {
       if (s.dataLakeObjectInfo?.name === wantedDlo) return true;
       // Fallback: exact name match (handles manifests that provide explicit `name`).
       if (s.name === props.name) return true;
       // And label-startsWith handles the auto-suffix pattern for IngestApi.
       if (s.label && s.label.startsWith(props.label)) return true;
       return false;
-    });
-    if (!match?.recordId || !match.name) return null;
-    return DataStreamResource.read(ctx, match.recordId);
+    };
+    // `GET /ssot/data-streams` is server-capped at ~10 results per page — a
+    // `limit`/`batchSize` of 200 does NOT widen it (confirmed live, a live org org).
+    // A single-page `list()` therefore misses a stream that sorts past the cap,
+    // so an existing stream (e.g. left by a lost-state partial deploy) is
+    // misclassified as `create` and the platform 400s with
+    // "EDTO '<name>' already in use". Page through with the SDK's `listAll`
+    // generator (follows nextPageUrl, falls back to offset) and stop at the
+    // first match. Scoped by connectionName to keep each page small.
+    for await (const s of ctx.client.dataStreams.listAll({
+      connectionName: props.connectionName,
+    })) {
+      if (!matches(s)) continue;
+      if (!s.recordId || !s.name) continue;
+      return DataStreamResource.read(ctx, s.recordId);
+    }
+    return null;
   },
 
   async create(ctx, props): Promise<DataStreamOutput> {
