@@ -237,6 +237,19 @@ describe("SemanticModel construct — calculated dimensions", () => {
     });
   });
 
+  it("omits calculatedDimensions from resolved props when none are authored (hash-stable upgrade)", () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+    });
+    // The key must be ABSENT (not `[]`) so hashProps yields the same hash as a
+    // manifest authored before the prop existed — otherwise every pre-existing
+    // SemanticModel drop+recreates on upgrade.
+    expect(sm.props).not.toHaveProperty("calculatedDimensions");
+  });
+
   it("honors author overrides", () => {
     const sm = buildWith({
       apiName: "Month",
