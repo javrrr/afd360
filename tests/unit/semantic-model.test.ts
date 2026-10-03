@@ -211,6 +211,76 @@ describe("SemanticModel construct — calculated measurements", () => {
   });
 });
 
+describe("SemanticModel construct — calculated dimensions", () => {
+  function buildWith(cd: Record<string, unknown>) {
+    const { stack, dmo } = stackWith();
+    return new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+      calculatedDimensions: [cd as never],
+    });
+  }
+
+  it("applies dimension defaults (Text / Discrete / None / None / visible)", () => {
+    const sm = buildWith({ apiName: "Bucket", expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END" });
+    const cd = sm.props.calculatedDimensions[0]!;
+    expect(cd).toEqual({
+      apiName: "Bucket",
+      label: "Bucket",
+      expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END",
+      dataType: "Text",
+      displayCategory: "Discrete",
+      semanticDataType: "None",
+      sortOrder: "None",
+      isVisible: true,
+    });
+  });
+
+  it("honors author overrides", () => {
+    const sm = buildWith({
+      apiName: "Month",
+      label: "Close Month",
+      expression: "[Fact.CloseDate]",
+      dataType: "Date",
+      isVisible: false,
+    });
+    const cd = sm.props.calculatedDimensions[0]!;
+    expect(cd.label).toBe("Close Month");
+    expect(cd.dataType).toBe("Date");
+    expect(cd.isVisible).toBe(false);
+  });
+
+  it("forwards the live-confirmed wire body — level 'Row', no agg fields, fixed scaffolding", async () => {
+    connectRequest.mockReset();
+    connectRequest.mockImplementation(async (_s: unknown, opts: { method: string }) =>
+      opts.method === "GET" ? { apiName: "Model" } : {},
+    );
+    const sm = buildWith({ apiName: "Bucket", expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END" });
+    await SemanticModelResource.create(ctx(), sm.props);
+    const dimCall = connectRequest.mock.calls.find(
+      (c) => (c[1] as { path: string }).path.endsWith("/calculated-dimensions"),
+    )!;
+    const body = (dimCall[1] as { body: Record<string, unknown> }).body;
+    expect(body).toEqual({
+      apiName: "Bucket",
+      label: "Bucket",
+      expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END",
+      dataType: "Text",
+      displayCategory: "Discrete",
+      level: "Row",
+      semanticDataType: "None",
+      sortOrder: "None",
+      isVisible: true,
+      filters: [],
+      isOverrideBase: false,
+      overriddenProperties: [],
+    });
+    expect(body).not.toHaveProperty("aggregationType");
+    expect(body).not.toHaveProperty("totalAggregationType");
+  });
+});
+
 describe("SemanticModel construct — measure guards", () => {
   it("rejects a Percent measure", () => {
     const { stack, dmo } = stackWith();
@@ -529,11 +599,12 @@ describe("SemanticModelResource — CRUD wire calls", () => {
         },
       ],
       calculatedMeasurements: [{ apiName: "Cnt", expression: "count([Fact])", aggregationType: "UserAgg" }],
+      calculatedDimensions: [{ apiName: "Bucket", expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END" }],
     });
     return sm.props;
   }
 
-  it("issues shell → data-objects → relationships → calculated-measurements in order, then reads", async () => {
+  it("issues shell → data-objects → relationships → calculated-measurements → calculated-dimensions in order, then reads", async () => {
     connectRequest.mockImplementation(async (_session: unknown, opts: { method: string }) =>
       opts.method === "GET" ? { apiName: "Model", label: "Model", isQueryable: "Queryable" } : {},
     );
@@ -550,6 +621,7 @@ describe("SemanticModelResource — CRUD wire calls", () => {
       { method: "POST", path: "/ssot/semantic/models/Model/data-objects", apiVersion: "64.0" },
       { method: "POST", path: "/ssot/semantic/models/Model/relationships", apiVersion: "64.0" },
       { method: "POST", path: "/ssot/semantic/models/Model/calculated-measurements", apiVersion: "64.0" },
+      { method: "POST", path: "/ssot/semantic/models/Model/calculated-dimensions", apiVersion: "64.0" },
       { method: "GET", path: "/ssot/semantic/models/Model", apiVersion: "64.0" },
     ]);
   });

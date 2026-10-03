@@ -77,6 +77,7 @@ export type {
   SemanticRelationshipProps,
   SemanticRelationshipCriterion,
   SemanticCalculatedMeasurementProps,
+  SemanticCalculatedDimensionProps,
   SemanticCardinality,
   SemanticFilter,
 } from "./resources/semantic-model.js";

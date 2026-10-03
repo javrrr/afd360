@@ -307,13 +307,20 @@ new SemanticModel(stack, "SalesModel", {
     // Row-level flavor — OMIT aggregationType; reference members dotted:
     // { apiName: "Net", expression: "[Orders.Gross] - [Orders.Tax]" },
   ],
+  calculatedDimensions: [
+    // Derived grouping / categorical field — always row-level (no aggregationType).
+    // Expression references data-object fields in SINGLE brackets:
+    { apiName: "DealSize", dataType: "Text",
+      expression: "IF [Orders.Amount] > 100000 THEN 'Large' ELSE 'Small' END" },
+  ],
 });
 ```
 
-Create issues a **4-step ordered POST** sequence, each sub-resource
+Create issues a **5-step ordered POST** sequence, each sub-resource
 referencing the prior by `apiName` (no id remap): shell → `data-objects`
-(one per DMO/CI) → `relationships` → `calculated-measurements`, then a GET
-hydrate. The sequence is **atomic**: if any step after the shell fails
+(one per DMO/CI) → `relationships` → `calculated-measurements` →
+`calculated-dimensions`, then a GET hydrate. The two calculated-field steps
+follow the data objects because their expressions reference data-object fields. The sequence is **atomic**: if any step after the shell fails
 (e.g. a bad relationship criterion), afd360 best-effort deletes the shell
 before rethrowing, so a failed deploy never strands a half-built,
 measure-less model on the org. DELETE cascades to all sub-resources and
@@ -357,15 +364,33 @@ delete-and-recreate (same policy as every other resource).
     - `filterLogic` (e.g. `"1 AND 2"`, 1-based filter indices) is a **sibling**
       of `filters` on the data-object body — afd360 exposes it as a top-level
       prop. Nesting it inside a filter object 400s "Filter logic is empty".
-    - **Caveat — raw columns aren't filterable yet.** The field ref in a filter
-      must resolve to a **calculated** field; a raw-dimension ref 400s "Invalid
-      calculated Field". afd360 doesn't yet expose calculated *dimensions*
-      (only calculated *measurements*), so a model-level WHERE on a raw column
-      isn't reachable through the construct. **Workaround:** reframe the WHERE
-      as a conditional-aggregation `calculatedMeasurement`, e.g.
-      `sum(if [Fact.Status] = "Won" then 1 else 0 end)` — live-validated, needs
-      no filter. Calculated-dimension support is the real prerequisite for raw
-      SDO filters (tracked, pending the live create shape).
+    - **Caveat — raw columns aren't filterable, and this is permanent.** The
+      field ref in a filter must resolve to a **calculated** field; a
+      raw-dimension ref 400s "Invalid calculated Field". `calculatedDimensions`
+      (now supported, below) does **not** unlock this: a calculated field's
+      expression references an SDO field, so it must be created *after* its data
+      object — but a data object's `filters` are fixed at the data-object CREATE
+      (there is no data-object PATCH), so the calc field can never pre-exist the
+      filter that would reference it (circular). The only other path, logical
+      views, is UI-only (no REST surface). So a model-level WHERE on a raw column
+      is a **REST dead end** (live-confirmed, a live org,  v64).
+      **Workaround:** reframe the WHERE as a conditional-aggregation
+      `calculatedMeasurement`, e.g. `sum(if [Fact.Status] = "Won" then 1 else 0
+      end)` — live-validated, needs no filter.
+- **Calculated dimensions (`calculatedDimensions`):** derived row-level
+  grouping/categorical fields (a bucketer, a date-part label), the dimension
+  counterpart to `calculatedMeasurements`. POSTed to
+  `.../{model}/calculated-dimensions` as step 5. A dimension is **always
+  row-level**: it carries no `aggregationType`/`level`/`totalAggregationType`
+  (afd360 fixes `level: "Row"`). The `expression` references data-object fields
+  in **single brackets** — `[Orders.Amount]` — so the referenced object must be
+  declared in `dataObjects`. Props: `apiName`, `expression` (required),
+  `label`, `dataType` (`Text` default / `Date` / `Boolean`), `displayCategory`
+  (`Discrete` default), `semanticDataType`, `sortOrder`, `isVisible`.
+  Live-confirmed buildable **and queryable** — a gateway group-by on the calc
+  dim returns clean partitions (a live org,  v64). Note this is for its
+  **own value** (derived groupings); it does **not** enable raw-column SDO
+  filters — see the filters caveat above.
 - **Cio data objects reject type coercion:** a measure's `storageDataType`
   must equal the CI output field's native type.
 - **tableType** is `Standard` (NOT "Full"); **sentiment** accepts only
