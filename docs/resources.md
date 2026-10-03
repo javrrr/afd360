@@ -8,6 +8,16 @@ resource codifies. For anything below marked **quirk X**, see
 Each construct's first argument is its parent `Stack`; the second is a
 logical id unique within the stack; the third is the props object.
 
+The resources fall into two layers:
+
+- **Data Cloud pipeline** (ingestion → modeling → RAG): [`Connection`](#connection),
+  [`ConnectionSchema`](#connectionschema), [`DataStream`](#datastream),
+  [`DMO`](#dmo), [`Mapping`](#mapping), [`Relationship`](#relationship),
+  [`CalculatedInsight`](#calculatedinsight), [`SearchIndex`](#searchindex).
+- **Tableau Next analytics** (BI + agent query layer over the modeled data):
+  [`SemanticModel`](#semanticmodel), [`Visualization`](#visualization),
+  [`Dashboard`](#dashboard).
+
 ---
 
 ## Connection

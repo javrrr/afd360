@@ -1,12 +1,23 @@
 # afd360
 
 Agentforce Data 360 SDK — declare Data 360 configurations in a TypeScript
-manifest and deploy them to a Salesforce org.
+manifest and deploy them to a Salesforce org. afd360 spans two layers: the
+**Data Cloud pipeline** (ingestion → modeling → RAG) and the **Tableau Next
+analytics layer** (semantic models, visualizations, dashboards) that a BI
+workbook or Agentforce agent queries over that data.
 
-**Status:** v0.1 — RAG pipeline end-to-end (Connection, DataStream, DMO,
-Mapping, Relationship, CalculatedInsight, SearchIndex). See
-[`PLAN.md`](./PLAN.md) for milestone history and
-[`docs/resources.md`](./docs/resources.md) for the resource reference.
+**Status:** data pipeline + Tableau Next both end-to-end. Resources:
+
+- **Data Cloud pipeline** — `Connection` (AwsS3, Snowflake, IngestApi,
+  same-org CRM / Home), `ConnectionSchema`, `DataStream`, `DMO`, `Mapping`,
+  `Relationship`, `CalculatedInsight`, `SearchIndex` (hybrid vector + keyword
+  RAG).
+- **Tableau Next analytics** — `SemanticModel` (dimensions, measures,
+  relationships, calculated measurements + dimensions), `Visualization`,
+  `Dashboard`.
+
+See [`PLAN.md`](./PLAN.md) for milestone history and
+[`docs/resources.md`](./docs/resources.md) for the full resource reference.
 
 > **Building manifests with an AI coding assistant?** See
 > [`AGENTS.md`](./AGENTS.md) for operational guidance and
