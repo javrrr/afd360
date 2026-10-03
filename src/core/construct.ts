@@ -1,13 +1,21 @@
 import type { Data360Client } from "data-360-sdk";
+import type { TableauNextClient } from "tableau-next-sdk";
 import type { Session } from "../client/auth.js";
 
 /**
- * Ambient info handed to every Resource method. Contains the live SDK client,
+ * Ambient info handed to every Resource method. Contains the live SDK clients,
  * the resolved session (for per-org knobs), and the org alias so resources can
  * key state-file entries.
  */
 export interface ResourceContext {
   readonly client: Data360Client;
+  /**
+   * Tableau Next SDK client, pinned to the `/tableau/*` v67 surface. Used by the
+   * Visualization + Dashboard constructs for their transport. (SemanticModel
+   * stays on the raw-REST `connectRequest` seam — its `/ssot/semantic/models`
+   * surface is in neither published spec, so it is not part of this SDK.)
+   */
+  readonly tableauClient: TableauNextClient;
   readonly session: Session;
   readonly orgAlias: string;
   /**
