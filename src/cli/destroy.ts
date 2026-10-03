@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import pc from "picocolors";
 import { loadApp } from "./load-config.js";
 import { getSession } from "../client/auth.js";
-import { createClient } from "../client/factory.js";
+import { createClient, createTableauClient } from "../client/factory.js";
 import { readState, writeState } from "../core/state.js";
 import { applyMoves } from "../core/moves.js";
 import { reverseTopologicalSort, topologicalSort } from "../core/graph.js";
@@ -39,6 +39,7 @@ export function registerDestroy(program: Command): void {
 
       const session = await getSession(orgAlias);
       const client = createClient(session);
+      const tableauClient = createTableauClient(session);
       // A DataStream's source DLO can't be deleted while a mapped DMO still
       // references it, and that DMO is torn down later in the same reverse-topo
       // pass (no dependsOn edge between them). So DataStream.delete registers
@@ -47,6 +48,7 @@ export function registerDestroy(program: Command): void {
       const deferredDloNames: string[] = [];
       const ctx: ResourceContext = {
         client,
+        tableauClient,
         session,
         orgAlias,
         deferDloCleanup: (name) => deferredDloNames.push(name),
