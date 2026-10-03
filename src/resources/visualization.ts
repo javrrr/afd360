@@ -1,3 +1,4 @@
+import type { VisualizationInputRepresentation } from "tableau-next-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
@@ -9,12 +10,14 @@ import type { SemanticModel } from "./semantic-model.js";
  * Tableau-Next **visualization** construct — the chart/table a workbook or an
  * Agentforce surface renders over a {@link SemanticModel}.
  *
- * Like SemanticModel there is NO data-360-sdk service for this surface, so the
- * resource talks raw Connect REST through `connectRequest` (see
- * src/client/rest.ts). The wire contract was captured firsthand
- * against a live org (v67.0, `/tableau/visualizations`, round-trip POST 201 →
- * GET 200 → DELETE 204, 2026-09-30) — see
- * feedback_semantic-model-viz-api-surface.md.
+ * Transport: the `/tableau/visualizations` CRUD runs through the
+ * **tableau-next-sdk** client (`ctx.tableauClient.visualizations`), the generated
+ * wrapper over the Tableau Next OpenAPI spec. Only the model-id resolve hits a
+ * different surface — `/ssot/semantic/models` (v64) is in neither published spec,
+ * so it stays on the raw-REST `connectRequest` seam (see src/client/rest.ts),
+ * same seam SemanticModel keeps. The wire contract was captured firsthand against
+ * a live org (v67.0, `/tableau/visualizations`, round-trip POST 201 → GET 200 →
+ * DELETE 204, 2026-09-30) — see feedback_semantic-model-viz-api-surface.md.
  *
  * Create is a SINGLE POST. We build the body fresh (never round-tripping a GET),
  * so the read-only fields the platform rejects on input — `id`, `createdBy`,
@@ -39,9 +42,9 @@ import type { SemanticModel } from "./semantic-model.js";
  * model at v64, so shapes can diverge across versions).
  */
 
-/** API version the `/tableau/` surface is gated to. v64/v65 → DOWNGRADE_VERSION_ERROR. */
-const VIZ_API_VERSION = "67.0";
-const VIZ_PATH = "/tableau/visualizations";
+// The `/tableau/visualizations` surface (v67) is handled by the tableau-next-sdk
+// client (ctx.tableauClient.visualizations); only the model-id resolve below
+// hits the raw-REST seam.
 /** Semantic-models surface (v64) — queried once at create to resolve the model's record id. */
 const SEMANTIC_API_VERSION = "64.0";
 const MODELS_PATH = "/ssot/semantic/models";
@@ -61,7 +64,10 @@ export interface VizField {
   readonly fieldName: string;
   readonly role: VizRole;
   readonly axis: VizAxis;
-  /** Display type, e.g. `Text` | `Number` | `Currency`. */
+  /** Slot `type` discriminator — the literal `"Field"` (a slot that references a
+   * model field). Defaults to `"Field"`; there is no reason to override it today.
+   * This is NOT a display dataType — the live v67 body carries no per-field
+   * dataType; dimension/measure is expressed via `role` + `displayCategory`. */
   readonly type?: string;
   /** `Discrete` for a dimension (default), `Continuous` for a measure. */
   readonly displayCategory?: string;
@@ -164,9 +170,9 @@ function buildFieldsObject(fields: ReadonlyArray<ResolvedField>): Record<string,
   return obj;
 }
 
-/** `marks` scaffold — chart type is `marks.panes.type` (panes is a SINGLE
- * OBJECT, NOT an array), with a parallel `marks.headers` object. Shape
- * confirmed live (v67.0 capture, 2026-10-01). */
+/** `marks` scaffold — chart type is `marks.panes.type` (panes is a SINGLE OBJECT,
+ * NOT an array), with a parallel `marks.headers` object and an (empty) `fields`.
+ * Shape confirmed live (v67.0). */
 function buildMarks(chartType: string): Record<string, unknown> {
   return {
     fields: {},
@@ -185,9 +191,137 @@ function buildMarks(chartType: string): Record<string, unknown> {
   };
 }
 
-/** Generated `visualSpecification` — columns/rows are slot-id arrays, the chart
- * is picked by `marks.panes.type`, and `style` is left empty (render
- * boilerplate the platform fills). Overridden wholesale by `props.visualSpecification`. */
+/** Static (chart-type-agnostic) members of `visualSpecification.style`, captured
+ * verbatim from a known-good v67 viz GET. The slot-keyed members
+ * (`axis`/`encodings`/`headers.fields`) are layered on in {@link buildStyle}. */
+const STYLE_STATIC = {
+  fieldLabels: {
+    columns: { showDividerLine: false, showLabels: true },
+    rows: { showDividerLine: false, showLabels: true },
+  },
+  fit: "Standard",
+  fonts: {
+    actionableHeaders: { color: "#0250d9", size: 13 },
+    axisTickLabels: { color: "#2e2e2e", size: 13 },
+    fieldLabels: { color: "#2e2e2e", size: 13 },
+    headers: { color: "#2e2e2e", size: 13 },
+    legendLabels: { color: "#2e2e2e", size: 13 },
+    markLabels: { color: "#2e2e2e", size: 13 },
+    marks: { color: "#2e2e2e", size: 13 },
+  },
+  lines: {
+    axisLine: { color: "#c9c9c9" },
+    fieldLabelDividerLine: { color: "#c9c9c9" },
+    separatorLine: { color: "#c9c9c9" },
+    zeroLine: { color: "#c9c9c9" },
+  },
+  // `style.marks` — distinct from `visualSpecification.marks`; static, not slot-keyed.
+  marks: {
+    fields: {},
+    headers: {
+      color: { color: "" },
+      isAutomaticSize: true,
+      label: { canOverlapLabels: false, marksToLabel: { type: "All" }, showMarkLabels: false },
+      range: { reverse: true },
+      size: { isAutomatic: true, type: "Pixel", value: 13 },
+    },
+    panes: {
+      color: { color: "" },
+      isAutomaticSize: true,
+      isStackingAxisCentered: false,
+      label: { canOverlapLabels: false, marksToLabel: { type: "All" }, showMarkLabels: false },
+      range: { reverse: true },
+      size: { isAutomatic: true, type: "Percentage", value: 75 },
+    },
+  },
+  referenceLines: {},
+  shading: { backgroundColor: "#ffffff", banding: { rows: { color: "#e5e5e5" } } },
+  showDataPlaceholder: false,
+  title: { isVisible: true },
+} as const;
+
+/** Static `headers.columns`/`headers.rows` siblings of the slot-keyed `headers.fields`. */
+const STYLE_HEADERS_STATIC = {
+  columns: { mergeRepeatedCells: true, showIndex: false, sizing: { fieldHeight: {} } },
+  rows: { mergeRepeatedCells: true, showIndex: false, sizing: { fieldWidth: {} } },
+} as const;
+
+/**
+ * `visualSpecification.style` — the member the platform requires a REAL
+ * (fully-populated) value for; an empty `style: {}` drew the misleading
+ * `"Value required for [...]"` 400 chain (value-gated, not a writability gate).
+ * Twelve members total, captured verbatim from a known-good v67 viz
+ * (/tmp capture, live-verified 2026-10-03). Three are SLOT-KEYED under a
+ * `.fields` map and keyed by SLOT ROLE:
+ *   - `axis.fields`      — MEASURE slots (number-format axis, `type:"NumberShort"`)
+ *   - `encodings.fields` — MEASURE slots (default number format, `type:"Number"` —
+ *                          intentionally different from axis's "NumberShort")
+ *   - `headers.fields`   — DIMENSION slots (visibility toggles)
+ * The remaining nine members are chart-type-agnostic constants
+ * ({@link STYLE_STATIC} + {@link STYLE_HEADERS_STATIC}).
+ */
+function buildStyle(fields: ReadonlyArray<ResolvedField>): Record<string, unknown> {
+  const axisFields: Record<string, unknown> = {};
+  const encodingFields: Record<string, unknown> = {};
+  const headerFields: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (f.role === "Measure") {
+      axisFields[f.slot] = {
+        isVisible: true,
+        isZeroLineVisible: true,
+        range: { includeZero: true, type: "Auto" },
+        scale: {
+          format: {
+            numberFormatInfo: {
+              decimalPlaces: 2,
+              displayUnits: "Auto",
+              includeThousandSeparator: true,
+              negativeValuesFormat: "Auto",
+              prefix: "",
+              suffix: "",
+              type: "NumberShort",
+            },
+          },
+        },
+        ticks: { majorTicks: { type: "Auto" }, minorTicks: { type: "Auto" } },
+      };
+      encodingFields[f.slot] = {
+        defaults: {
+          format: {
+            numberFormatInfo: {
+              decimalPlaces: 2,
+              displayUnits: "Auto",
+              includeThousandSeparator: true,
+              negativeValuesFormat: "Auto",
+              prefix: "",
+              suffix: "",
+              type: "Number",
+            },
+          },
+        },
+      };
+    } else {
+      headerFields[f.slot] = { hiddenValues: [], isVisible: true, showMissingValues: false };
+    }
+  }
+  return {
+    axis: { fields: axisFields },
+    encodings: { fields: encodingFields },
+    headers: { ...STYLE_HEADERS_STATIC, fields: headerFields },
+    ...STYLE_STATIC,
+  };
+}
+
+/** Generated `visualSpecification` — all NINE members, required + value-gated at
+ * v67 (NOT read-only: omitting it → `"Value required for [visualSpecification]"`,
+ * `{}` → `"Value required for [layout]"`, and so on member by member). `columns`
+ * are the measure slot ids, `rows` the dimension slot ids (derived from each
+ * field's `axis`); `chartType` flows into `marks.panes.type`; `style` carries the
+ * real per-measure axis-format value (an empty `{}` is rejected). The remaining
+ * members (`layout`/`legends`/`forecasts`/`referenceLines`/`measureValues`) are
+ * structural scaffolds. Full 9-member body proven live (201 → dashboard create →
+ * re-diff noop → destroy → delete-404, 2026-10-03). Overridden wholesale by
+ * `props.visualSpecification`. */
 function buildVisualSpecification(p: VisualizationResourceProps): Record<string, unknown> {
   if (p.visualSpecification) return p.visualSpecification;
   const columns = p.fields.filter((f) => f.axis === "column").map((f) => f.slot);
@@ -196,7 +330,12 @@ function buildVisualSpecification(p: VisualizationResourceProps): Record<string,
     columns,
     rows,
     marks: buildMarks(p.chartType),
-    style: {},
+    layout: "Vizql",
+    legends: {},
+    forecasts: {},
+    referenceLines: {},
+    measureValues: [],
+    style: buildStyle(p.fields),
   };
 }
 
@@ -275,11 +414,7 @@ export const VisualizationResource: Resource<VisualizationResourceProps, Visuali
 
   async read(ctx, id): Promise<VisualizationOutput | null> {
     try {
-      const raw = await connectRequest<Record<string, unknown>>(ctx.session, {
-        method: "GET",
-        path: `${VIZ_PATH}/${id}`,
-        apiVersion: VIZ_API_VERSION,
-      });
+      const raw = await ctx.tableauClient.visualizations.get(id);
       return toOutput(raw as never);
     } catch (err) {
       if (isNotFound(err)) return null;
@@ -288,15 +423,12 @@ export const VisualizationResource: Resource<VisualizationResourceProps, Visuali
   },
 
   async lookupByProps(ctx, props): Promise<VisualizationOutput | null> {
-    // No GET-by-name on this surface; list and match on developer name.
+    // No GET-by-name on this surface; list (paginated) and match on dev name.
     try {
-      const raw = await connectRequest<{ visualizations?: Array<Record<string, unknown>> }>(
-        ctx.session,
-        { method: "GET", path: VIZ_PATH, apiVersion: VIZ_API_VERSION },
-      );
-      const list = raw?.visualizations ?? [];
-      const match = list.find((v) => v["name"] === props.name);
-      return match ? toOutput(match as never) : null;
+      for await (const v of ctx.tableauClient.visualizations.listAll()) {
+        if (v.name === props.name) return toOutput(v as never);
+      }
+      return null;
     } catch (err) {
       if (isNotFound(err)) return null;
       throw err;
@@ -305,14 +437,10 @@ export const VisualizationResource: Resource<VisualizationResourceProps, Visuali
 
   async create(ctx, props): Promise<VisualizationOutput> {
     const modelId = await resolveModelId(ctx, props.modelApiName);
-    const created = await retryOn5xx(() =>
-      connectRequest<Record<string, unknown>>(ctx.session, {
-        method: "POST",
-        path: VIZ_PATH,
-        body: buildCreateBody(props, modelId),
-        apiVersion: VIZ_API_VERSION,
-      }),
-    );
+    // Body is hand-built to the live-verified contract (buildCreateBody); cast
+    // through unknown to the generated input type for the typed SDK call.
+    const body = buildCreateBody(props, modelId) as unknown as VisualizationInputRepresentation;
+    const created = await retryOn5xx(() => ctx.tableauClient.visualizations.create(body));
     return toOutput(created as never);
   },
 
@@ -325,13 +453,7 @@ export const VisualizationResource: Resource<VisualizationResourceProps, Visuali
 
   async delete(ctx, id): Promise<void> {
     try {
-      await retryOn5xx(() =>
-        connectRequest(ctx.session, {
-          method: "DELETE",
-          path: `${VIZ_PATH}/${id}`,
-          apiVersion: VIZ_API_VERSION,
-        }),
-      );
+      await retryOn5xx(() => ctx.tableauClient.visualizations.delete(id));
     } catch (err) {
       if (isNotFound(err)) return;
       throw err;
@@ -375,7 +497,12 @@ export class Visualization extends Construct {
       fieldName: f.fieldName,
       role: f.role,
       axis: f.axis,
-      type: f.type ?? (f.role === "Measure" ? "Number" : "Text"),
+      // Slot `type` is the structural discriminator "this slot is a field
+      // reference" — the literal "Field". (The platform 400s with
+      // POST_BODY_PARSE_ERROR on a display dataType like "Text"/"Number"; the
+      // live v67 body has no per-field dataType — role + displayCategory carry
+      // the dim/measure distinction. Live-verified 2026-10-03.)
+      type: f.type ?? "Field",
       displayCategory: f.displayCategory ?? (f.role === "Measure" ? "Continuous" : "Discrete"),
       // A function applies to measures only; default UserAgg, omit for dimensions.
       ...(f.role === "Measure" ? { function: f.function ?? "UserAgg" } : {}),

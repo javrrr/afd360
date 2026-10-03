@@ -2,7 +2,7 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { loadApp } from "./load-config.js";
 import { getSession } from "../client/auth.js";
-import { createClient } from "../client/factory.js";
+import { createClient, createTableauClient } from "../client/factory.js";
 import { readState } from "../core/state.js";
 import { applyMoves } from "../core/moves.js";
 import { topologicalSort } from "../core/graph.js";
@@ -54,7 +54,8 @@ export function registerDiff(program: Command): void {
 
       const session = await getSession(orgAlias);
       const client = createClient(session);
-      const ctx: ResourceContext = { client, session, orgAlias };
+      const tableauClient = createTableauClient(session);
+      const ctx: ResourceContext = { client, tableauClient, session, orgAlias };
 
       const state = await readState(orgAlias, stack.id);
       // Apply declared renames in-memory so the preview reflects a re-key
