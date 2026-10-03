@@ -20,12 +20,14 @@ import type { CalculatedInsight } from "./calculated-insight.js";
  * org (v64.0, `/ssot/semantic/models`, 2026-10-01) — see
  * feedback_semantic-model-viz-api-surface.md.
  *
- * Create is a FOUR-STEP ordered sequence, each sub-resource referencing the
+ * Create is a FIVE-STEP ordered sequence, each sub-resource referencing the
  * prior by **apiName** (no server-id remap):
  *   1. POST /ssot/semantic/models                        — the shell
  *   2. POST .../{model}/data-objects                     — one per DMO/CI
  *   3. POST .../{model}/relationships                    — FK joins
  *   4. POST .../{model}/calculated-measurements          — derived metrics
+ *   5. POST .../{model}/calculated-dimensions            — derived groupings
+ * Steps 4-5 both reference data-object fields, so they follow the data objects.
  * DELETE /ssot/semantic/models/{apiName} tears the whole thing down (204/404).
  */
 
@@ -150,9 +152,13 @@ export interface SemanticDataObjectProps {
    * LIVE (a live org, v64): each filter is `{ operator: "In", values: [...] }`
    * (an `In` operator needs ≥2 values) and references a **calculated** field —
    * the server rejects a raw-dimension field ref with "Invalid calculated
-   * Field". So SDO filters on raw columns aren't yet reachable through afd360
-   * (calculated-dimension support is the prerequisite); reframe a WHERE as a
-   * conditional-aggregation `calculatedMeasurement` for now.
+   * Field". SDO filters on raw columns are a PERMANENT REST dead end, and
+   * `calculatedDimensions` (now a first-class prop) does NOT unlock them: a
+   * calc field references an SDO field, so it must be created AFTER its data
+   * object — but a data object's `filters` are fixed at the data-object CREATE
+   * (no PATCH), so the calc field can never pre-exist the filter that would
+   * reference it (circular; logical views, the only other path, are UI-only).
+   * Reframe a WHERE as a conditional-aggregation `calculatedMeasurement`.
    */
   readonly filters?: ReadonlyArray<SemanticFilter>;
   /**
@@ -226,6 +232,36 @@ export interface SemanticCalculatedMeasurementProps {
   readonly filters?: ReadonlyArray<SemanticFilter>;
 }
 
+/**
+ * A derived DIMENSION — a row-level calculated grouping/categorical field
+ * (e.g. an `IF [Fact.Amount] > 100000 THEN 'Large' ...` bucketer, or a
+ * `[Fact.CloseDate]`-derived month label). Unlike a {@link
+ * SemanticCalculatedMeasurementProps}, a dimension is ALWAYS row-level: it
+ * carries no `aggregationType`/`level`/`totalAggregationType` (the server
+ * fixes `level: "Row"`). Live-confirmed buildable + queryable (a live org,
+ * , v64): `POST .../{model}/calculated-dimensions` → 201, and the
+ * field groups a gateway query cleanly.
+ *
+ * The `expression` references data-object fields in SINGLE brackets —
+ * `[Opportunity.Amount]`, `[Opportunity.StageName]` — so the referenced data
+ * object must be declared in `dataObjects` (afd360 posts dimensions after the
+ * data objects for exactly this reason). NOTE: a calculated dimension is NOT a
+ * raw-column SDO-filter enabler — see the `filters` note on
+ * {@link SemanticDataObjectProps}.
+ */
+export interface SemanticCalculatedDimensionProps {
+  readonly apiName: string;
+  readonly label?: string;
+  readonly expression: string;
+  /** `Text` (default), `Date`, or `Boolean`. */
+  readonly dataType?: string;
+  /** `Discrete` (default) — dimensions are categorical. */
+  readonly displayCategory?: string;
+  readonly semanticDataType?: string;
+  readonly sortOrder?: string;
+  readonly isVisible?: boolean;
+}
+
 export interface SemanticModelProps {
   /** Model apiName. Defaults to the construct id. */
   readonly apiName?: string;
@@ -242,6 +278,7 @@ export interface SemanticModelProps {
   readonly dataObjects: ReadonlyArray<SemanticDataObjectProps>;
   readonly relationships?: ReadonlyArray<SemanticRelationshipProps>;
   readonly calculatedMeasurements?: ReadonlyArray<SemanticCalculatedMeasurementProps>;
+  readonly calculatedDimensions?: ReadonlyArray<SemanticCalculatedDimensionProps>;
   readonly dependsOn?: ReadonlyArray<Construct>;
 }
 
@@ -329,6 +366,17 @@ interface ResolvedCalcMeasurement {
   readonly filters?: ReadonlyArray<SemanticFilter>;
 }
 
+interface ResolvedCalcDimension {
+  readonly apiName: string;
+  readonly label: string;
+  readonly expression: string;
+  readonly dataType: string;
+  readonly displayCategory: string;
+  readonly semanticDataType: string;
+  readonly sortOrder: string;
+  readonly isVisible: boolean;
+}
+
 export interface SemanticModelResourceProps {
   readonly apiName: string;
   readonly label: string;
@@ -340,6 +388,7 @@ export interface SemanticModelResourceProps {
   readonly dataObjects: ReadonlyArray<ResolvedDataObject>;
   readonly relationships: ReadonlyArray<ResolvedRelationship>;
   readonly calculatedMeasurements: ReadonlyArray<ResolvedCalcMeasurement>;
+  readonly calculatedDimensions: ReadonlyArray<ResolvedCalcDimension>;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -464,6 +513,28 @@ function buildCalcMeasurementBody(cm: ResolvedCalcMeasurement): unknown {
   return body;
 }
 
+// Live-confirmed shape (a live org, , v64). A dimension is always
+// row-level: `level: "Row"` is fixed and the measurement-only agg fields are
+// absent. `filters`/`isOverrideBase`/`overriddenProperties` are platform-fixed
+// scaffolding (empty/false), not author-settable — SDO filtering is a dead end
+// (see SemanticDataObjectProps.filters), so they are emitted as constants.
+function buildCalcDimensionBody(cd: ResolvedCalcDimension): unknown {
+  return {
+    apiName: cd.apiName,
+    label: cd.label,
+    expression: cd.expression,
+    dataType: cd.dataType,
+    displayCategory: cd.displayCategory,
+    level: "Row",
+    semanticDataType: cd.semanticDataType,
+    sortOrder: cd.sortOrder,
+    isVisible: cd.isVisible,
+    filters: [],
+    isOverrideBase: false,
+    overriddenProperties: [],
+  };
+}
+
 export const SemanticModelResource: Resource<SemanticModelResourceProps, SemanticModelOutput> = {
   type: "SemanticModel",
   surface: "connect",
@@ -527,6 +598,10 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
       // 4. calculated measurements
       for (const cm of props.calculatedMeasurements) {
         await post(`${modelPath}/calculated-measurements`, buildCalcMeasurementBody(cm));
+      }
+      // 5. calculated dimensions (reference SDO fields, so after data objects)
+      for (const cd of props.calculatedDimensions) {
+        await post(`${modelPath}/calculated-dimensions`, buildCalcDimensionBody(cd));
       }
     } catch (err) {
       try {
@@ -675,6 +750,19 @@ export class SemanticModel extends Construct {
       return base;
     });
 
+    const calculatedDimensions: ResolvedCalcDimension[] = (props.calculatedDimensions ?? []).map(
+      (cd) => ({
+        apiName: cd.apiName,
+        label: cd.label ?? cd.apiName,
+        expression: cd.expression,
+        dataType: cd.dataType ?? "Text",
+        displayCategory: cd.displayCategory ?? "Discrete",
+        semanticDataType: cd.semanticDataType ?? "None",
+        sortOrder: cd.sortOrder ?? "None",
+        isVisible: cd.isVisible ?? true,
+      }),
+    );
+
     this.props = {
       apiName: this.apiName,
       label,
@@ -686,6 +774,7 @@ export class SemanticModel extends Construct {
       dataObjects,
       relationships,
       calculatedMeasurements,
+      calculatedDimensions,
     };
 
     this.dependsOn = [...deps, ...(props.dependsOn ?? []), ...(opts.dependsOn ?? [])];
