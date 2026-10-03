@@ -1,5 +1,6 @@
 import type { Data360Client } from "data-360-sdk";
 import type { TableauNextClient } from "tableau-next-sdk";
+import type { TableauSemanticsClient } from "tableau-semantics-sdk";
 import type { Session } from "../client/auth.js";
 
 /**
@@ -11,11 +12,18 @@ export interface ResourceContext {
   readonly client: Data360Client;
   /**
    * Tableau Next SDK client, pinned to the `/tableau/*` v67 surface. Used by the
-   * Visualization + Dashboard constructs for their transport. (SemanticModel
-   * stays on the raw-REST `connectRequest` seam — its `/ssot/semantic/models`
-   * surface is in neither published spec, so it is not part of this SDK.)
+   * Visualization + Dashboard constructs for their transport. (SemanticModel is
+   * a DIFFERENT surface — `/ssot/semantic/models` v65 — served by its own
+   * {@link semanticsClient}.)
    */
   readonly tableauClient: TableauNextClient;
+  /**
+   * Tableau Semantics SDK client, pinned to the `/ssot/semantic/models` v65
+   * surface. Used by the SemanticModel construct for its transport (replacing
+   * the hand-rolled `connectRequest` seam). Built in the CLI ctx sites via
+   * `createSemanticsClient`.
+   */
+  readonly semanticsClient: TableauSemanticsClient;
   readonly session: Session;
   readonly orgAlias: string;
   /**

@@ -2,7 +2,7 @@ import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn5xx, isNotFound as baseIsNotFound } from "../client/retry.js";
-import { connectRequest } from "../client/rest.js";
+import type { SemanticModelInputRepresentation } from "tableau-semantics-sdk";
 import type { DMO } from "./dmo.js";
 import type { CalculatedInsight } from "./calculated-insight.js";
 
@@ -14,28 +14,30 @@ import type { CalculatedInsight } from "./calculated-insight.js";
  * measures, wires foreign-key relationships between them, and adds derived
  * calculated measurements. A Tableau viz later binds to the model.
  *
- * There is NO data-360-sdk service for semantic models, so this resource talks
- * raw Connect REST through `connectRequest` (see src/client/rest.ts). The wire
- * contract below was captured firsthand against a live Data 360
- * org (v64.0, `/ssot/semantic/models`, 2026-10-01) — see
- * feedback_semantic-model-viz-api-surface.md.
+ * Transport is `tableau-semantics-sdk` (`ctx.semanticsClient.semanticModels`),
+ * a generated client over the v65 `/ssot/semantic/models` spec. This replaced
+ * the hand-rolled `connectRequest` seam that talked v64. The v65 spec models
+ * only the ENVELOPE: `semanticModels.put(apiName, body)` is a single
+ * create-or-replace upsert of the WHOLE model tree. The sub-collection
+ * ELEMENT shapes are open objects the SDK does NOT type, so afd360 still owns
+ * the exact leaf field names/values below — captured firsthand against a live
+ * Data 360 org at v64 (2026-10-01; see feedback_semantic-model-viz-api-surface.md).
  *
- * Create is a FIVE-STEP ordered sequence, each sub-resource referencing the
- * prior by **apiName** (no server-id remap):
- *   1. POST /ssot/semantic/models                        — the shell
- *   2. POST .../{model}/data-objects                     — one per DMO/CI
- *   3. POST .../{model}/relationships                    — FK joins
- *   4. POST .../{model}/calculated-measurements          — derived metrics
- *   5. POST .../{model}/calculated-dimensions            — derived groupings
- * Steps 4-5 both reference data-object fields, so they follow the data objects.
- * DELETE /ssot/semantic/models/{apiName} tears the whole thing down (204/404).
+ * v64→v65 MIGRATION: create collapses the old FIVE ordered sub-resource POSTs
+ * (shell → data-objects → relationships → calculated-measurements →
+ * calculated-dimensions) into ONE nested `put` body. The five v64 path segments
+ * become camelCase array properties on the body: `semanticDataObjects`,
+ * `semanticRelationships`, `semanticCalculatedMeasurements`,
+ * `semanticCalculatedDimensions`. DELETE tears the whole thing down.
+ *
+ * ⚠️ NOT LIVE-VALIDATED AT v65. The leaf names/values here are v64-captured and
+ * ported verbatim (the v65 input schemas are open objects, so the SDK can't
+ * confirm them at compile time). The v65 spec's two modeled enums hint at
+ * possible value deltas — `sourceCreation` (spec enum `Manual|Import` vs our
+ * `DataCloud`) and `queryUnrelatedDataObjects` (spec enum `Allow|Disallow` vs
+ * our `Union`). Only a live v65 create→get→delete can confirm the full body.
+ * Until that passes, this surface is NOT shippable (see SEMANTICS_API_VERSION).
  */
-
-/** API version the semantic-model endpoints were verified against. Pinned
- * because `/ssot/semantic/` is version-sensitive; the Tableau viz layer sits
- * on a DIFFERENT version (v67) — see the viz construct. */
-const SEMANTIC_API_VERSION = "64.0";
-const MODELS_PATH = "/ssot/semantic/models";
 
 /** `Cio` = CalculatedInsight output; `Dmo` = a DLO/DMO. (NOT "Dlm".) */
 export type SemanticDataObjectType = "Cio" | "Dmo";
@@ -429,7 +431,7 @@ function toOutput(raw: {
   return out;
 }
 
-function buildShellBody(p: SemanticModelResourceProps): unknown {
+function buildShellBody(p: SemanticModelResourceProps): Record<string, unknown> {
   return {
     apiName: p.apiName,
     label: p.label,
@@ -441,7 +443,7 @@ function buildShellBody(p: SemanticModelResourceProps): unknown {
   };
 }
 
-function buildDataObjectBody(d: ResolvedDataObject): unknown {
+function buildDataObjectBody(d: ResolvedDataObject): Record<string, unknown> {
   return {
     apiName: d.apiName,
     label: d.label,
@@ -486,7 +488,7 @@ function buildDataObjectBody(d: ResolvedDataObject): unknown {
   };
 }
 
-function buildRelationshipBody(r: ResolvedRelationship): unknown {
+function buildRelationshipBody(r: ResolvedRelationship): Record<string, unknown> {
   return {
     apiName: r.apiName,
     label: r.label,
@@ -533,7 +535,7 @@ function buildCalcMeasurementBody(cm: ResolvedCalcMeasurement): unknown {
 // absent. `filters`/`isOverrideBase`/`overriddenProperties` are platform-fixed
 // scaffolding (empty/false), not author-settable — SDO filtering is a dead end
 // (see SemanticDataObjectProps.filters), so they are emitted as constants.
-function buildCalcDimensionBody(cd: ResolvedCalcDimension): unknown {
+function buildCalcDimensionBody(cd: ResolvedCalcDimension): Record<string, unknown> {
   return {
     apiName: cd.apiName,
     label: cd.label,
@@ -550,6 +552,34 @@ function buildCalcDimensionBody(cd: ResolvedCalcDimension): unknown {
   };
 }
 
+/**
+ * Assemble the single nested v65 `put` body from the resolved props. The five
+ * v64 sub-resource POSTs become camelCase array properties here; the shell
+ * fields sit at the top level. Empty collections are OMITTED (not sent as `[]`)
+ * so the wire bytes stay minimal and a model with no relationships/calc fields
+ * matches the "no sub-resources" intent of the old per-POST loops.
+ *
+ * The SDK types the ELEMENT shapes as open objects, so the builders return
+ * `Record<string, unknown>` and the whole body is asserted to the SDK's
+ * `SemanticModelInputRepresentation` — afd360 owns the leaf field truth.
+ */
+function buildModelBody(p: SemanticModelResourceProps): SemanticModelInputRepresentation {
+  const body: Record<string, unknown> = {
+    ...buildShellBody(p),
+    semanticDataObjects: p.dataObjects.map(buildDataObjectBody),
+  };
+  if (p.relationships.length > 0) {
+    body["semanticRelationships"] = p.relationships.map(buildRelationshipBody);
+  }
+  if (p.calculatedMeasurements.length > 0) {
+    body["semanticCalculatedMeasurements"] = p.calculatedMeasurements.map(buildCalcMeasurementBody);
+  }
+  if (p.calculatedDimensions && p.calculatedDimensions.length > 0) {
+    body["semanticCalculatedDimensions"] = p.calculatedDimensions.map(buildCalcDimensionBody);
+  }
+  return body as SemanticModelInputRepresentation;
+}
+
 export const SemanticModelResource: Resource<SemanticModelResourceProps, SemanticModelOutput> = {
   type: "SemanticModel",
   surface: "connect",
@@ -560,22 +590,18 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
 
   async read(ctx, apiName): Promise<SemanticModelOutput | null> {
     try {
-      // Retry transient 5xx, exactly as create()/delete() do. The raw-REST
-      // connect seam intermittently 500s (platform-side races — same family as
-      // the Connection-delete transient 500). A bare GET let a transient 500
-      // fall straight through to isNotFound, which treats a 500 with a
-      // "not found"-ish body as gone → read() returns null → computeOp sees a
-      // state entry with no live match and emits a spurious `create` on re-diff.
-      // Retrying first means only a genuinely-absent model (a clean, un-retried
-      // 404) resolves to null; a transient blip heals before isNotFound sees it.
-      const raw = await retryOn5xx(() =>
-        connectRequest<Record<string, unknown>>(ctx.session, {
-          method: "GET",
-          path: `${MODELS_PATH}/${apiName}`,
-          apiVersion: SEMANTIC_API_VERSION,
-        }),
-      );
-      return toOutput(raw as never);
+      // Retry transient 5xx, exactly as create()/delete() do. The semantic
+      // surface intermittently 500s (platform-side races — same family as the
+      // Connection-delete transient 500). A bare GET let a transient 500 fall
+      // straight through to isNotFound, which treats a 500 with a "not found"-ish
+      // body as gone → read() returns null → computeOp sees a state entry with
+      // no live match and emits a spurious `create` on re-diff. Retrying first
+      // means only a genuinely-absent model (a clean, un-retried 404) resolves
+      // to null; a transient blip heals before isNotFound sees it. (The SDK's
+      // HttpClient also retries 5xx, but this outer wrap preserves the exact
+      // not-null-on-blip guarantee the fix relies on.)
+      const raw = await retryOn5xx(() => ctx.semanticsClient.semanticModels.get(apiName));
+      return toOutput(raw);
     } catch (err) {
       if (isNotFound(err)) return null;
       throw err;
@@ -587,56 +613,21 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
   },
 
   async create(ctx, props): Promise<SemanticModelOutput> {
-    // Four-step ordered create — each sub-resource references the prior by
-    // apiName (no id remap). The afd360 engine handles idempotency
-    // (noop/adopt/recreate) around this; create() itself always builds fresh,
-    // and a recreate deletes the whole model first (DELETE cascades).
-    const post = (path: string, body: unknown): Promise<unknown> =>
-      retryOn5xx(() =>
-        connectRequest(ctx.session, {
-          method: "POST",
-          path,
-          body,
-          apiVersion: SEMANTIC_API_VERSION,
-        }),
-      );
-
-    // 1. shell
-    await post(MODELS_PATH, buildShellBody(props));
-    const modelPath = `${MODELS_PATH}/${props.apiName}`;
-
-    // Steps 2-4 attach sub-resources to the shell. If any fails, the shell (plus
-    // whatever sub-resources already landed) would strand on-org with NO state
-    // entry: the next deploy can neither re-create it (the shell POST 409s on the
-    // duplicate name) nor usefully adopt it (it's incomplete). Make create ATOMIC
-    // — on any failure, roll the shell back (DELETE cascades to its children) and
-    // rethrow the ORIGINAL error so the real 400 is what reaches the user.
-    try {
-      // 2. data objects (one per DMO/CI)
-      for (const dob of props.dataObjects) {
-        await post(`${modelPath}/data-objects`, buildDataObjectBody(dob));
-      }
-      // 3. relationships
-      for (const rel of props.relationships) {
-        await post(`${modelPath}/relationships`, buildRelationshipBody(rel));
-      }
-      // 4. calculated measurements
-      for (const cm of props.calculatedMeasurements) {
-        await post(`${modelPath}/calculated-measurements`, buildCalcMeasurementBody(cm));
-      }
-      // 5. calculated dimensions (reference SDO fields, so after data objects)
-      for (const cd of props.calculatedDimensions ?? []) {
-        await post(`${modelPath}/calculated-dimensions`, buildCalcDimensionBody(cd));
-      }
-    } catch (err) {
-      try {
-        await SemanticModelResource.delete(ctx, props.apiName);
-      } catch {
-        // Best-effort rollback — swallow so the original create error surfaces,
-        // not a secondary cleanup failure. A surviving shell is still adoptable.
-      }
-      throw err;
-    }
+    // Single create-or-replace upsert (v65). The v64 five-step ordered POST
+    // sequence (shell → data-objects → relationships → calc-measurements →
+    // calc-dimensions) collapses into ONE nested `put` body. The afd360 engine
+    // handles idempotency (noop/adopt/recreate) around this; create() always
+    // builds fresh, and a recreate deletes the whole model first.
+    //
+    // No rollback dance anymore: the v64 code made create atomic by hand
+    // because a mid-sequence failure stranded a half-built shell that the next
+    // deploy could neither re-POST (409 duplicate) nor usefully adopt. A single
+    // PUT has no partial-sequence to strand — a failed or partial apply is
+    // simply overwritten by the next deploy's create-or-replace PUT. retryOn5xx
+    // mirrors the old per-POST transient-500 retry.
+    await retryOn5xx(() =>
+      ctx.semanticsClient.semanticModels.put(props.apiName, buildModelBody(props)),
+    );
 
     const hydrated = await SemanticModelResource.read(ctx, props.apiName);
     if (hydrated) return hydrated;
@@ -652,21 +643,16 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
   },
 
   async delete(ctx, apiName): Promise<void> {
-    // DELETE /ssot/semantic/models/{apiName} → 204, cascades to all
-    // sub-resources. Idempotent: swallow 404 (already gone).
+    // DELETE /ssot/semantic/models/{apiName} cascades to all sub-resources
+    // (v65 returns 200, not 204 — afd360 doesn't assert the code, only that the
+    // call resolves). Idempotent: swallow 404 (already gone).
     //
     // Ordering note: a SemanticModel HARD-BLOCKS deletion of the CIs it
     // references (platform 400 DELETE_FAILED). So it must delete BEFORE its
     // CalculatedInsights — enforced by dependsOn (reverse-topo destroy) and by
     // its slot ahead of CalculatedInsight in PRUNE_TYPE_PRIORITY.
     try {
-      await retryOn5xx(() =>
-        connectRequest(ctx.session, {
-          method: "DELETE",
-          path: `${MODELS_PATH}/${apiName}`,
-          apiVersion: SEMANTIC_API_VERSION,
-        }),
-      );
+      await retryOn5xx(() => ctx.semanticsClient.semanticModels.delete(apiName));
     } catch (err) {
       if (isNotFound(err)) return;
       throw err;
