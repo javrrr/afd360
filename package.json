@@ -26,9 +26,8 @@
     "templates",
     "examples",
     "skills",
-    "docs",
+    "docs/resources.md",
     "README.md",
-    "PRD.md",
     "AGENTS.md"
   ],
   "sideEffects": false,

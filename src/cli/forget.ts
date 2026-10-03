@@ -23,8 +23,7 @@ interface ForgetOpts {
  *
  * Use it to drop tracking of a not-owned / referenced resource, to clear stale
  * state cruft, or to reset a resource so the next deploy re-adopts it. Never
- * touches the org — no session or client is created. See
- * docs/design-orphan-prune.md §5.4.
+ * touches the org — no session or client is created.
  */
 export function registerForget(program: Command): void {
   program

@@ -15,8 +15,9 @@ In rough order:
 
 1. `docs/resources.md` — full prop reference for every resource type.
 2. `examples/` subdirectories — scenario manifests you can adapt.
-3. The TypeScript types (`dist/index.d.ts` / source under `src/resources/`).
-4. `PLAN.md` Appendix A — operational quirks the type system can't catch.
+3. The TypeScript types (`dist/index.d.ts` / source under `src/resources/`) —
+   each resource module documents the operational quirks the type system
+   can't catch inline.
 
 This file plus `examples/` should cover ~80% of cases. Reach for the
 others when an example doesn't match the user's intent or types
