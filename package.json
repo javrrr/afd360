@@ -1,7 +1,7 @@
 {
   "name": "afd360",
   "version": "0.3.0",
-  "description": "Manifest-driven IaC for Salesforce Data Cloud / Agentforce — declare connections, data streams, DMOs, mappings, and search indexes in TypeScript and deploy idempotently.",
+  "description": "Manifest-driven IaC for Salesforce Data Cloud / Agentforce Data 360 — declare connections, data streams, DMOs, mappings, search indexes, and Tableau Next semantic models, visualizations, and dashboards in TypeScript and deploy idempotently.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -80,7 +80,11 @@
     "dmo",
     "data-stream",
     "snowflake",
-    "s3"
+    "s3",
+    "tableau-next",
+    "semantic-model",
+    "visualization",
+    "dashboard"
   ],
   "repository": {
     "type": "git",
