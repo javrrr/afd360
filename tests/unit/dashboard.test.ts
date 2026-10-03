@@ -3,9 +3,19 @@ import { App, Stack } from "../../src/core/app.js";
 import { DMO } from "../../src/resources/dmo.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
-// Mock the raw-REST seam so CRUD tests assert wire calls without an org.
-const { connectRequest } = vi.hoisted(() => ({ connectRequest: vi.fn() }));
-vi.mock("../../src/client/rest.js", () => ({ connectRequest }));
+// The `/tableau/dashboards` transport runs through the tableau-next-sdk client
+// (ctx.tableauClient.dashboards); mock its service methods. (Dashboard no longer
+// touches the raw-REST connectRequest seam at all.)
+const tnDash = {
+  get: vi.fn(),
+  listAll: vi.fn(),
+  create: vi.fn(),
+  delete: vi.fn(),
+};
+
+async function* asyncGen<T>(items: T[]): AsyncGenerator<T> {
+  for (const i of items) yield i;
+}
 
 const { Dashboard, DashboardResource, deterministicPageUuid, buildCreateBody } = await import(
   "../../src/resources/dashboard.js"
@@ -42,6 +52,9 @@ function stackWithViz(): { stack: Stack; viz: InstanceType<typeof Visualization>
 function ctx(): ResourceContext {
   return {
     client: {} as unknown as ResourceContext["client"],
+    tableauClient: {
+      dashboards: tnDash,
+    } as unknown as ResourceContext["tableauClient"],
     session: {
       alias: "o", username: "u", orgId: "00D",
       instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
@@ -184,7 +197,10 @@ describe("DashboardResource — create body", () => {
 
 describe("DashboardResource — CRUD wire calls", () => {
   beforeEach(() => {
-    connectRequest.mockReset();
+    tnDash.get.mockReset();
+    tnDash.listAll.mockReset();
+    tnDash.create.mockReset();
+    tnDash.delete.mockReset();
   });
 
   function resolvedProps() {
@@ -196,43 +212,38 @@ describe("DashboardResource — CRUD wire calls", () => {
     return dash.props;
   }
 
-  it("POSTs to /tableau/dashboards at v67.0", async () => {
-    connectRequest.mockResolvedValue({ id: "0FK000", name: "Overview" });
+  it("creates the dashboard through the TN client with the hand-built body", async () => {
+    tnDash.create.mockResolvedValue({ id: "0FK000", name: "Overview" });
     const out = await DashboardResource.create(ctx(), resolvedProps());
     expect(out.id).toBe("0FK000");
-    const call = connectRequest.mock.calls[0]![1] as { method: string; path: string; apiVersion: string };
-    expect(call).toMatchObject({ method: "POST", path: "/tableau/dashboards", apiVersion: "67.0" });
+    expect(tnDash.create).toHaveBeenCalledTimes(1);
+    const body = tnDash.create.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body).toMatchObject({ name: "Overview", workspaceIdOrApiName: "WS" });
   });
 
   it("read returns null when the dashboard does not exist", async () => {
-    connectRequest.mockRejectedValue({ status: 404, body: {} });
+    tnDash.get.mockRejectedValue({ status: 404, body: {} });
     await expect(DashboardResource.read(ctx(), "gone")).resolves.toBeNull();
   });
 
   it("read treats a 400 'was not found' body as absent", async () => {
-    connectRequest.mockRejectedValue({ status: 400, body: { message: "Dashboard was not found" } });
+    tnDash.get.mockRejectedValue({ status: 400, body: { message: "Dashboard was not found" } });
     await expect(DashboardResource.read(ctx(), "gone")).resolves.toBeNull();
   });
 
-  it("lookupByProps lists and matches on developer name (wrapped shape)", async () => {
-    connectRequest.mockResolvedValue({
-      dashboards: [
+  it("lookupByProps lists and matches on developer name", async () => {
+    tnDash.listAll.mockReturnValue(
+      asyncGen([
         { id: "0FKaaa", name: "Other" },
         { id: "0FK000", name: "Overview" },
-      ],
-    });
-    const found = await DashboardResource.lookupByProps!(ctx(), resolvedProps());
-    expect(found?.id).toBe("0FK000");
-  });
-
-  it("lookupByProps tolerates a bare-array list shape", async () => {
-    connectRequest.mockResolvedValue([{ id: "0FK000", name: "Overview" }]);
+      ]),
+    );
     const found = await DashboardResource.lookupByProps!(ctx(), resolvedProps());
     expect(found?.id).toBe("0FK000");
   });
 
   it("delete swallows a 404 as idempotent success", async () => {
-    connectRequest.mockRejectedValue({ status: 404, body: { message: "not found" } });
+    tnDash.delete.mockRejectedValue({ status: 404, body: { message: "not found" } });
     await expect(DashboardResource.delete(ctx(), "0FK000")).resolves.toBeUndefined();
   });
 

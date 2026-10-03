@@ -2,7 +2,7 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { loadApp } from "./load-config.js";
 import { getSession } from "../client/auth.js";
-import { createClient } from "../client/factory.js";
+import { createClient, createTableauClient } from "../client/factory.js";
 import {
   readState,
   writeState,
@@ -70,7 +70,8 @@ export function registerDeploy(program: Command): void {
 
       const session = await getSession(orgAlias);
       const client = createClient(session);
-      const ctx: ResourceContext = { client, session, orgAlias };
+      const tableauClient = createTableauClient(session);
+      const ctx: ResourceContext = { client, tableauClient, session, orgAlias };
 
       const state = await readState(orgAlias, stack.id);
       // Apply declared renames (Stack `moved`) before planning so a renamed

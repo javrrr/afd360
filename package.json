@@ -57,6 +57,7 @@
     "data-360-sdk": "^0.6.2",
     "dotenv": "^17.4.2",
     "picocolors": "^1.1.1",
+    "tableau-next-sdk": "file:../tableau-next-sdk",
     "tsx": "^4.21.0",
     "zod": "^4.0.0"
   },

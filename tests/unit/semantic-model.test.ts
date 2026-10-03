@@ -664,6 +664,23 @@ describe("SemanticModelResource — CRUD wire calls", () => {
     connectRequest.mockRejectedValue({ status: 404, body: {} });
     await expect(SemanticModelResource.read(ctx(), "Missing")).resolves.toBeNull();
   });
+
+  it("read retries a transient 5xx (does NOT misread an existing model as gone)", async () => {
+    // The connect seam intermittently 500s; a 500 whose body matches /not found/
+    // would otherwise be swallowed as not-found → spurious `create` on re-diff.
+    connectRequest
+      .mockRejectedValueOnce({ status: 500, body: { message: "model not found (transient)" } })
+      .mockResolvedValueOnce({ apiName: "Model", isQueryable: "Queryable" });
+    const out = await SemanticModelResource.read(ctx(), "Model");
+    expect(out?.apiName).toBe("Model");
+    expect(connectRequest).toHaveBeenCalledTimes(2); // retried once, then succeeded
+  });
+
+  it("read does NOT retry a clean 404 (genuinely-absent model stays fast)", async () => {
+    connectRequest.mockRejectedValue({ status: 404, body: {} });
+    await expect(SemanticModelResource.read(ctx(), "Missing")).resolves.toBeNull();
+    expect(connectRequest).toHaveBeenCalledTimes(1); // 404 is not retried
+  });
 });
 
 describe("SemanticModel construct — filters (pass-through)", () => {

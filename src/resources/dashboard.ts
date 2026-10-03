@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
+import type { DashboardInputRepresentation } from "tableau-next-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
 import { retryOn5xx, isNotFound as baseIsNotFound } from "../client/retry.js";
-import { connectRequest } from "../client/rest.js";
 import type { Visualization } from "./visualization.js";
 
 /**
@@ -11,10 +11,12 @@ import type { Visualization } from "./visualization.js";
  * {@link Visualization} tiles, rendered in a workspace and queried by a Tableau
  * Next workbook or an Agentforce surface.
  *
- * Like SemanticModel and Visualization there is NO data-360-sdk service for this
- * surface, so the resource talks raw Connect REST through `connectRequest` (see
- * src/client/rest.ts). The wire contract was captured firsthand
- * against a live org (v67.0, `/tableau/dashboards`, POST accepted, 2026-10-01).
+ * Transport: the `/tableau/dashboards` CRUD runs through the **tableau-next-sdk**
+ * client (`ctx.tableauClient.dashboards`), the generated wrapper over the Tableau
+ * Next OpenAPI spec. (SemanticModel stays on the raw-REST `connectRequest` seam —
+ * its `/ssot/semantic/models` surface is in neither published spec.) The wire
+ * contract was captured firsthand against a live org (v67.0, `/tableau/dashboards`,
+ * POST accepted, 2026-10-01).
  *
  * Create is a SINGLE POST. We build the body fresh (never round-tripping a GET),
  * so the read-only fields the platform rejects/ignores on input are simply never
@@ -37,9 +39,8 @@ import type { Visualization } from "./visualization.js";
  * defeat idempotency; the server accepted a client-supplied uuid in b8's capture.
  */
 
-/** API version the `/tableau/` surface is gated to. v64/v65 → DOWNGRADE_VERSION_ERROR. */
-const DASH_API_VERSION = "67.0";
-const DASH_PATH = "/tableau/dashboards";
+// The `/tableau/dashboards` surface (v67) is handled by the tableau-next-sdk
+// client (ctx.tableauClient.dashboards).
 
 /** Grid defaults from b8's live-accepted capture. */
 const DEFAULT_COLUMN_COUNT = 48;
@@ -249,11 +250,7 @@ export const DashboardResource: Resource<DashboardResourceProps, DashboardOutput
 
   async read(ctx, id): Promise<DashboardOutput | null> {
     try {
-      const raw = await connectRequest<Record<string, unknown>>(ctx.session, {
-        method: "GET",
-        path: `${DASH_PATH}/${id}`,
-        apiVersion: DASH_API_VERSION,
-      });
+      const raw = await ctx.tableauClient.dashboards.get(id);
       return toOutput(raw as never);
     } catch (err) {
       if (isNotFound(err)) return null;
@@ -262,20 +259,12 @@ export const DashboardResource: Resource<DashboardResourceProps, DashboardOutput
   },
 
   async lookupByProps(ctx, props): Promise<DashboardOutput | null> {
-    // No GET-by-name filter on the list; list and match on developer name.
+    // No GET-by-name filter on the list; list (paginated) and match on dev name.
     try {
-      const raw = await connectRequest<unknown>(ctx.session, {
-        method: "GET",
-        path: DASH_PATH,
-        apiVersion: DASH_API_VERSION,
-      });
-      // Tolerate both the wrapped shape (`{ dashboards: [...] }`, analog of the
-      // viz surface's `visualizations`) and a bare array.
-      const list: Array<Record<string, unknown>> = Array.isArray(raw)
-        ? (raw as Array<Record<string, unknown>>)
-        : ((raw as { dashboards?: Array<Record<string, unknown>> })?.dashboards ?? []);
-      const match = list.find((d) => d["name"] === props.name);
-      return match ? toOutput(match as never) : null;
+      for await (const d of ctx.tableauClient.dashboards.listAll()) {
+        if (d.name === props.name) return toOutput(d as never);
+      }
+      return null;
     } catch (err) {
       if (isNotFound(err)) return null;
       throw err;
@@ -283,14 +272,10 @@ export const DashboardResource: Resource<DashboardResourceProps, DashboardOutput
   },
 
   async create(ctx, props): Promise<DashboardOutput> {
-    const created = await retryOn5xx(() =>
-      connectRequest<Record<string, unknown>>(ctx.session, {
-        method: "POST",
-        path: DASH_PATH,
-        body: buildCreateBody(props),
-        apiVersion: DASH_API_VERSION,
-      }),
-    );
+    // Body is hand-built to the live-verified contract (buildCreateBody); cast
+    // through unknown to the generated input type for the typed SDK call.
+    const body = buildCreateBody(props) as unknown as DashboardInputRepresentation;
+    const created = await retryOn5xx(() => ctx.tableauClient.dashboards.create(body));
     return toOutput(created as never);
   },
 
@@ -303,13 +288,7 @@ export const DashboardResource: Resource<DashboardResourceProps, DashboardOutput
 
   async delete(ctx, id): Promise<void> {
     try {
-      await retryOn5xx(() =>
-        connectRequest(ctx.session, {
-          method: "DELETE",
-          path: `${DASH_PATH}/${id}`,
-          apiVersion: DASH_API_VERSION,
-        }),
-      );
+      await retryOn5xx(() => ctx.tableauClient.dashboards.delete(id));
     } catch (err) {
       if (isNotFound(err)) return;
       throw err;

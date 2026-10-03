@@ -560,11 +560,21 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
 
   async read(ctx, apiName): Promise<SemanticModelOutput | null> {
     try {
-      const raw = await connectRequest<Record<string, unknown>>(ctx.session, {
-        method: "GET",
-        path: `${MODELS_PATH}/${apiName}`,
-        apiVersion: SEMANTIC_API_VERSION,
-      });
+      // Retry transient 5xx, exactly as create()/delete() do. The raw-REST
+      // connect seam intermittently 500s (platform-side races — same family as
+      // the Connection-delete transient 500). A bare GET let a transient 500
+      // fall straight through to isNotFound, which treats a 500 with a
+      // "not found"-ish body as gone → read() returns null → computeOp sees a
+      // state entry with no live match and emits a spurious `create` on re-diff.
+      // Retrying first means only a genuinely-absent model (a clean, un-retried
+      // 404) resolves to null; a transient blip heals before isNotFound sees it.
+      const raw = await retryOn5xx(() =>
+        connectRequest<Record<string, unknown>>(ctx.session, {
+          method: "GET",
+          path: `${MODELS_PATH}/${apiName}`,
+          apiVersion: SEMANTIC_API_VERSION,
+        }),
+      );
       return toOutput(raw as never);
     } catch (err) {
       if (isNotFound(err)) return null;
