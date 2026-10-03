@@ -361,9 +361,21 @@ delete-and-recreate (same policy as every other resource).
     - Each filter is `{ operator: "In", values: [...] }`; the `In` operator
       requires **≥2 values** (fewer → "Values field must contain at least two
       values for the operator: In").
-    - `filterLogic` (e.g. `"1 AND 2"`, 1-based filter indices) is a **sibling**
-      of `filters` on the data-object body — afd360 exposes it as a top-level
-      prop. Nesting it inside a filter object 400s "Filter logic is empty".
+    - **Operator vocabulary.** `In` is afd360-live-confirmed (v64). The fuller
+      semantic-layer operator set — reported at v66 by two external Tableau Next
+      skills repos ([[tableau-skills-repos-contract-deltas]]), one confidence
+      tier below afd360's own live validation, so treat as a lead to confirm, not
+      gospel — is: `Equals`, `In`, `NotIn`, `Contains`, `NotContains`,
+      `GreaterThan`, `LessThan`, `Between`, `StartsWith`. The server **rejects
+      SQL-style spellings** (`=`, `!=`, `>=`, `GREATER_THAN_OR_EQUAL`, …). Because
+      afd360 forwards each filter object verbatim (`SemanticFilter` is an open
+      `Record`), any of these pass straight through — but only `In` has been
+      exercised on the v64 rig; verify the others against your org before relying
+      on them.
+    - `filterLogic` (e.g. `"1 AND 2"`, **1-based** filter indices in filter order)
+      is a **sibling** of `filters` on the data-object body — afd360 exposes it as
+      a top-level prop. Nesting it inside a filter object 400s "Filter logic is
+      empty".
     - **Caveat — raw columns aren't filterable, and this is permanent.** The
       field ref in a filter must resolve to a **calculated** field; a
       raw-dimension ref 400s "Invalid calculated Field". `calculatedDimensions`
@@ -403,6 +415,14 @@ delete-and-recreate (same policy as every other resource).
   assets) can't be pinned at model level — model them as a conditional-
   aggregation `calculatedMeasurement` instead. True explicit joins would need
   logical-view relationships, not yet an afd360 construct.
+- **Agent readiness (`agentEnabled`) is a two-part gate:** setting
+  `agentEnabled: true` on the model is **necessary but not sufficient** to let an
+  Agentforce agent (Concierge) query it. The model must ALSO pass a manual
+  **Analytics Agent Readiness** step in the Tableau Next / Data Cloud UI, which
+  has no REST surface — afd360 cannot perform it. Document it to the user as a
+  deploy-time prerequisite the org admin satisfies by hand, the same shape as the
+  Multiple-Currencies org setting ([[currency-type-breaks-semantic-layer]]). The
+  flag declares intent; the UI gate makes it real.
 - **Prune ordering:** a model HARD-BLOCKS deletion of the CIs/DMOs it
   references (platform 400 `DELETE_FAILED`), so it is slotted ahead of
   `CalculatedInsight` + `DMO` in `PRUNE_TYPE_PRIORITY` and torn down first.

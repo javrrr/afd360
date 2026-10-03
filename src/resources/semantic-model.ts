@@ -274,6 +274,14 @@ export interface SemanticModelProps {
   readonly currency?: { readonly useOrgDefault: boolean };
   /** Default `Union`. */
   readonly queryUnrelatedDataObjects?: string;
+  /**
+   * Default `false`. Sets `agentEnabled` on the model so an Agentforce agent
+   * (Concierge) may query it. NECESSARY BUT NOT SUFFICIENT: enabling the model
+   * for agents also requires a manual **Analytics Agent Readiness** step in the
+   * Tableau Next / Data Cloud UI that afd360 cannot perform via REST. Treat this
+   * flag as "declare the intent"; the UI gate is a deploy-time prerequisite the
+   * org admin must satisfy, same shape as the Multiple-Currencies org setting.
+   */
   readonly agentEnabled?: boolean;
   readonly dataObjects: ReadonlyArray<SemanticDataObjectProps>;
   readonly relationships?: ReadonlyArray<SemanticRelationshipProps>;
