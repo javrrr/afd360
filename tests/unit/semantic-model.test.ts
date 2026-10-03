@@ -7,13 +7,17 @@ import { Mapping } from "../../src/resources/mapping.js";
 import { CalculatedInsight } from "../../src/resources/calculated-insight.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
-// connectRequest is the raw-REST seam; mock it so resource CRUD tests assert
-// the wire calls without touching an org. Hoisted so the vi.mock factory can
-// reference it.
-const { connectRequest } = vi.hoisted(() => ({ connectRequest: vi.fn() }));
-vi.mock("../../src/client/rest.js", () => ({ connectRequest }));
+// SemanticModel talks to tableau-semantics-sdk via `ctx.semanticsClient
+// .semanticModels` (put/get/delete). The client is INJECTED through ctx (not
+// module-imported), so we mock the three methods on a fake client rather than
+// mocking a module — CRUD tests assert the single nested `put` body and the
+// get/delete behavior without touching an org.
+const semanticModels = {
+  put: vi.fn(),
+  get: vi.fn(),
+  delete: vi.fn(),
+};
 
-// Import AFTER the mock is registered.
 const { SemanticModel, SemanticModelResource } = await import(
   "../../src/resources/semantic-model.js"
 );
@@ -36,12 +40,24 @@ function stackWith(): { stack: Stack; dmo: DMO } {
 function ctx(): ResourceContext {
   return {
     client: {} as unknown as ResourceContext["client"],
+    tableauClient: {} as unknown as ResourceContext["tableauClient"],
+    semanticsClient: { semanticModels } as unknown as ResourceContext["semanticsClient"],
     session: {
       alias: "o", username: "u", orgId: "00D",
       instanceUrl: "https://x", apiVersion: "66.0", accessToken: "tok",
     },
     orgAlias: "o",
   };
+}
+
+/** The single nested `put` body from the one create call. */
+function putBody(): Record<string, unknown> {
+  return semanticModels.put.mock.calls[0]![1] as Record<string, unknown>;
+}
+
+/** First element of a sub-collection array on the put body. */
+function putCollection(key: string): Record<string, unknown>[] {
+  return (putBody()[key] as Record<string, unknown>[]) ?? [];
 }
 
 describe("SemanticModel construct — source resolution", () => {
@@ -265,16 +281,11 @@ describe("SemanticModel construct — calculated dimensions", () => {
   });
 
   it("forwards the live-confirmed wire body — level 'Row', no agg fields, fixed scaffolding", async () => {
-    connectRequest.mockReset();
-    connectRequest.mockImplementation(async (_s: unknown, opts: { method: string }) =>
-      opts.method === "GET" ? { apiName: "Model" } : {},
-    );
+    semanticModels.put.mockReset().mockResolvedValue({});
+    semanticModels.get.mockReset().mockResolvedValue({ apiName: "Model" });
     const sm = buildWith({ apiName: "Bucket", expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END" });
     await SemanticModelResource.create(ctx(), sm.props);
-    const dimCall = connectRequest.mock.calls.find(
-      (c) => (c[1] as { path: string }).path.endsWith("/calculated-dimensions"),
-    )!;
-    const body = (dimCall[1] as { body: Record<string, unknown> }).body;
+    const body = putCollection("semanticCalculatedDimensions")[0]!;
     expect(body).toEqual({
       apiName: "Bucket",
       label: "Bucket",
@@ -485,52 +496,48 @@ describe("SemanticModel construct — model joinType guard", () => {
   });
 });
 
-describe("SemanticModelResource.create — atomic rollback", () => {
+describe("SemanticModelResource.create — single-put semantics", () => {
   beforeEach(() => {
-    connectRequest.mockReset();
+    semanticModels.put.mockReset();
+    semanticModels.get.mockReset();
+    semanticModels.delete.mockReset();
   });
 
-  it("rolls back the shell (DELETE) when a child POST fails, and rethrows the original error", async () => {
+  it("issues exactly ONE put (no per-sub-resource POSTs) then reads once — no rollback dance", async () => {
     const { stack, dmo } = stackWith();
     const sm = new SemanticModel(stack, "Model", {
       dataObjects: [
         { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
       ],
     });
-    // shell POST ok; first data-objects POST 400s; DELETE (rollback) ok.
-    connectRequest.mockImplementation(async (_s: unknown, o: { method: string; path: string }) => {
-      if (o.method === "POST" && o.path.endsWith("/data-objects")) {
-        throw { status: 400, body: { message: "SemanticAuthoringError: bad field" } };
-      }
-      return {};
-    });
+    semanticModels.put.mockResolvedValue({});
+    semanticModels.get.mockResolvedValue({ apiName: "Model" });
 
-    await expect(SemanticModelResource.create(ctx(), sm.props)).rejects.toMatchObject({ status: 400 });
+    await SemanticModelResource.create(ctx(), sm.props);
 
-    const deletes = connectRequest.mock.calls.filter((c) => (c[1] as { method: string }).method === "DELETE");
-    expect(deletes).toHaveLength(1);
-    expect((deletes[0]![1] as { path: string }).path).toBe("/ssot/semantic/models/Model");
+    expect(semanticModels.put).toHaveBeenCalledTimes(1);
+    expect(semanticModels.get).toHaveBeenCalledTimes(1);
+    // The old v64 flow rolled back by DELETE on partial failure; the single
+    // create-or-replace PUT has no partial sequence, so delete is never called.
+    expect(semanticModels.delete).not.toHaveBeenCalled();
   });
 
-  it("surfaces the original create error even if rollback DELETE also fails", async () => {
+  it("rethrows the original error when the put fails, and does NOT attempt a rollback delete", async () => {
     const { stack, dmo } = stackWith();
     const sm = new SemanticModel(stack, "Model", {
       dataObjects: [
         { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
       ],
     });
-    connectRequest.mockImplementation(async (_s: unknown, o: { method: string; path: string }) => {
-      if (o.method === "POST" && o.path.endsWith("/data-objects")) {
-        throw { status: 400, body: { message: "original" } };
-      }
-      // 403 (not 5xx, not 404): delete() rethrows immediately — no retry/backoff.
-      if (o.method === "DELETE") throw { status: 403, body: { message: "cleanup failed" } };
-      return {};
-    });
+    semanticModels.put.mockRejectedValue({ status: 400, body: { message: "original" } });
+
     await expect(SemanticModelResource.create(ctx(), sm.props)).rejects.toMatchObject({
       status: 400,
       body: { message: "original" },
     });
+    // A failed/partial create-or-replace is overwritten by the next deploy's
+    // PUT — create() must not fire a cleanup delete.
+    expect(semanticModels.delete).not.toHaveBeenCalled();
   });
 });
 
@@ -585,11 +592,10 @@ describe("SemanticModel construct — reciprocal Mapping wiring", () => {
 });
 
 describe("SemanticModelResource — CRUD wire calls", () => {
-  // NB block body — `mockReset()` returns the mock (a function); an arrow that
-  // returned it would make vitest treat the mock as a teardown cleanup hook and
-  // invoke `connectRequest()` with no args during callCleanupHooks.
   beforeEach(() => {
-    connectRequest.mockReset();
+    semanticModels.put.mockReset();
+    semanticModels.get.mockReset();
+    semanticModels.delete.mockReset();
   });
 
   function resolvedProps() {
@@ -617,35 +623,31 @@ describe("SemanticModelResource — CRUD wire calls", () => {
     return sm.props;
   }
 
-  it("issues shell → data-objects → relationships → calculated-measurements → calculated-dimensions in order, then reads", async () => {
-    connectRequest.mockImplementation(async (_session: unknown, opts: { method: string }) =>
-      opts.method === "GET" ? { apiName: "Model", label: "Model", isQueryable: "Queryable" } : {},
-    );
+  it("collapses the whole model into ONE put (apiName + every sub-collection), then reads", async () => {
+    semanticModels.put.mockResolvedValue({});
+    semanticModels.get.mockResolvedValue({ apiName: "Model", label: "Model", isQueryable: "Queryable" });
     const out = await SemanticModelResource.create(ctx(), resolvedProps());
     expect(out.apiName).toBe("Model");
 
-    const calls = connectRequest.mock.calls.map((c) => ({
-      method: (c[1] as { method: string }).method,
-      path: (c[1] as { path: string }).path,
-      apiVersion: (c[1] as { apiVersion?: string }).apiVersion,
-    }));
-    expect(calls).toEqual([
-      { method: "POST", path: "/ssot/semantic/models", apiVersion: "64.0" },
-      { method: "POST", path: "/ssot/semantic/models/Model/data-objects", apiVersion: "64.0" },
-      { method: "POST", path: "/ssot/semantic/models/Model/relationships", apiVersion: "64.0" },
-      { method: "POST", path: "/ssot/semantic/models/Model/calculated-measurements", apiVersion: "64.0" },
-      { method: "POST", path: "/ssot/semantic/models/Model/calculated-dimensions", apiVersion: "64.0" },
-      { method: "GET", path: "/ssot/semantic/models/Model", apiVersion: "64.0" },
-    ]);
+    expect(semanticModels.put).toHaveBeenCalledTimes(1);
+    const [apiName, body] = semanticModels.put.mock.calls[0]! as [string, Record<string, unknown>];
+    expect(apiName).toBe("Model");
+    // The five v64 POST path segments are now camelCase array properties on the
+    // single body — all present for a model that has each kind.
+    expect(body).toHaveProperty("semanticDataObjects");
+    expect(body).toHaveProperty("semanticRelationships");
+    expect(body).toHaveProperty("semanticCalculatedMeasurements");
+    expect(body).toHaveProperty("semanticCalculatedDimensions");
+    expect((body["semanticDataObjects"] as unknown[]).length).toBe(1);
+    // hydration read follows the write
+    expect(semanticModels.get).toHaveBeenCalledWith("Model");
   });
 
-  it("sends the shell body with sourceCreation + currency + agentEnabled", async () => {
-    connectRequest.mockImplementation(async (_s: unknown, opts: { method: string }) =>
-      opts.method === "GET" ? { apiName: "Model" } : {},
-    );
+  it("sends the shell fields at the top level of the put body (sourceCreation + currency + agentEnabled)", async () => {
+    semanticModels.put.mockResolvedValue({});
+    semanticModels.get.mockResolvedValue({ apiName: "Model" });
     await SemanticModelResource.create(ctx(), resolvedProps());
-    const shell = connectRequest.mock.calls[0]![1] as { body: Record<string, unknown> };
-    expect(shell.body).toMatchObject({
+    expect(putBody()).toMatchObject({
       apiName: "Model",
       dataspace: "default",
       sourceCreation: "DataCloud",
@@ -655,37 +657,56 @@ describe("SemanticModelResource — CRUD wire calls", () => {
     });
   });
 
+  it("omits empty sub-collections from the put body (relationships/calc fields absent when none authored)", async () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+    });
+    semanticModels.put.mockResolvedValue({});
+    semanticModels.get.mockResolvedValue({ apiName: "Model" });
+    await SemanticModelResource.create(ctx(), sm.props);
+    const body = putBody();
+    expect(body).toHaveProperty("semanticDataObjects");
+    expect(body).not.toHaveProperty("semanticRelationships");
+    expect(body).not.toHaveProperty("semanticCalculatedMeasurements");
+    expect(body).not.toHaveProperty("semanticCalculatedDimensions");
+  });
+
   it("delete swallows a 404 as idempotent success", async () => {
-    connectRequest.mockRejectedValue({ status: 404, body: { message: "not found" } });
+    semanticModels.delete.mockRejectedValue({ status: 404, body: { message: "not found" } });
     await expect(SemanticModelResource.delete(ctx(), "Gone")).resolves.toBeUndefined();
   });
 
   it("read returns null when the model does not exist", async () => {
-    connectRequest.mockRejectedValue({ status: 404, body: {} });
+    semanticModels.get.mockRejectedValue({ status: 404, body: {} });
     await expect(SemanticModelResource.read(ctx(), "Missing")).resolves.toBeNull();
   });
 
   it("read retries a transient 5xx (does NOT misread an existing model as gone)", async () => {
-    // The connect seam intermittently 500s; a 500 whose body matches /not found/
-    // would otherwise be swallowed as not-found → spurious `create` on re-diff.
-    connectRequest
+    // The semantic surface intermittently 500s; a 500 whose body matches
+    // /not found/ would otherwise be swallowed as not-found → spurious `create`
+    // on re-diff.
+    semanticModels.get
       .mockRejectedValueOnce({ status: 500, body: { message: "model not found (transient)" } })
       .mockResolvedValueOnce({ apiName: "Model", isQueryable: "Queryable" });
     const out = await SemanticModelResource.read(ctx(), "Model");
     expect(out?.apiName).toBe("Model");
-    expect(connectRequest).toHaveBeenCalledTimes(2); // retried once, then succeeded
+    expect(semanticModels.get).toHaveBeenCalledTimes(2); // retried once, then succeeded
   });
 
   it("read does NOT retry a clean 404 (genuinely-absent model stays fast)", async () => {
-    connectRequest.mockRejectedValue({ status: 404, body: {} });
+    semanticModels.get.mockRejectedValue({ status: 404, body: {} });
     await expect(SemanticModelResource.read(ctx(), "Missing")).resolves.toBeNull();
-    expect(connectRequest).toHaveBeenCalledTimes(1); // 404 is not retried
+    expect(semanticModels.get).toHaveBeenCalledTimes(1); // 404 is not retried
   });
 });
 
 describe("SemanticModel construct — filters (pass-through)", () => {
   beforeEach(() => {
-    connectRequest.mockReset();
+    semanticModels.put.mockReset();
+    semanticModels.get.mockReset();
   });
 
   function modelWith(opts: {
@@ -715,26 +736,27 @@ describe("SemanticModel construct — filters (pass-through)", () => {
     });
   }
 
-  async function postBodies(props: unknown): Promise<Record<string, Record<string, unknown>>> {
-    connectRequest.mockImplementation(async (_s: unknown, o: { method: string }) =>
-      o.method === "GET" ? { apiName: "Model" } : {},
-    );
+  /**
+   * Create the model via the single put and return the data-object and
+   * calculated-measurement ELEMENTS of the nested put body (the native home of
+   * their `filters`/`filterLogic` now that there are no per-sub-resource POSTs).
+   */
+  async function createdBodies(
+    props: unknown,
+  ): Promise<{ dob: Record<string, unknown>; cm: Record<string, unknown> }> {
+    semanticModels.put.mockResolvedValue({});
+    semanticModels.get.mockResolvedValue({ apiName: "Model" });
     await SemanticModelResource.create(ctx(), props as never);
-    const byPath: Record<string, Record<string, unknown>> = {};
-    for (const call of connectRequest.mock.calls) {
-      const o = call[1] as { method: string; path: string; body?: Record<string, unknown> };
-      if (o.method === "POST" && o.body) byPath[o.path] = o.body;
-    }
-    return byPath;
+    return {
+      dob: putCollection("semanticDataObjects")[0]!,
+      cm: putCollection("semanticCalculatedMeasurements")[0]!,
+    };
   }
 
-  const DOB_PATH = "/ssot/semantic/models/Model/data-objects";
-  const CM_PATH = "/ssot/semantic/models/Model/calculated-measurements";
-
-  it("omitting filters emits the unchanged `filters: []` wire default on both bodies", async () => {
-    const bodies = await postBodies(modelWith({}).props);
-    expect(bodies[DOB_PATH]!.filters).toEqual([]);
-    expect(bodies[CM_PATH]!.filters).toEqual([]);
+  it("omitting filters emits the unchanged `filters: []` wire default on both element bodies", async () => {
+    const { dob, cm } = await createdBodies(modelWith({}).props);
+    expect(dob.filters).toEqual([]);
+    expect(cm.filters).toEqual([]);
   });
 
   it("an explicit empty `filters: []` hashes identically to omitting it (recreate-safe)", () => {
@@ -745,14 +767,14 @@ describe("SemanticModel construct — filters (pass-through)", () => {
 
   it("a non-empty data-object filter is forwarded verbatim to the wire", async () => {
     const filter = { field: "Status", operator: "In", values: ["Won", "Lost"] };
-    const bodies = await postBodies(modelWith({ dobFilters: [filter] }).props);
-    expect(bodies[DOB_PATH]!.filters).toEqual([filter]);
+    const { dob } = await createdBodies(modelWith({ dobFilters: [filter] }).props);
+    expect(dob.filters).toEqual([filter]);
   });
 
   it("a non-empty calculated-measurement filter is forwarded verbatim to the wire", async () => {
     const filter = { field: "Stage", operator: "Equals", values: ["Closed"] };
-    const bodies = await postBodies(modelWith({ cmFilters: [filter] }).props);
-    expect(bodies[CM_PATH]!.filters).toEqual([filter]);
+    const { cm } = await createdBodies(modelWith({ cmFilters: [filter] }).props);
+    expect(cm.filters).toEqual([filter]);
   });
 
   it("a non-empty filter changes the hash (so it participates in drift detection)", () => {
@@ -765,17 +787,17 @@ describe("SemanticModel construct — filters (pass-through)", () => {
 
   it("filterLogic rides as a SIBLING of filters on the data-object body (not nested)", async () => {
     const filter = { operator: "In", values: ["Won", "Lost"] };
-    const bodies = await postBodies(
+    const { dob } = await createdBodies(
       modelWith({ dobFilters: [filter], filterLogic: "1 AND 2" }).props,
     );
-    expect(bodies[DOB_PATH]!.filterLogic).toBe("1 AND 2");
+    expect(dob.filterLogic).toBe("1 AND 2");
     // and the filters array is untouched (logic is NOT folded into a filter)
-    expect(bodies[DOB_PATH]!.filters).toEqual([filter]);
+    expect(dob.filters).toEqual([filter]);
   });
 
   it("omitting filterLogic leaves the key absent from the wire body", async () => {
-    const bodies = await postBodies(modelWith({}).props);
-    expect(bodies[DOB_PATH]!).not.toHaveProperty("filterLogic");
+    const { dob } = await createdBodies(modelWith({}).props);
+    expect(dob).not.toHaveProperty("filterLogic");
   });
 
   it("filterLogic participates in the hash (and omitted == absent)", () => {
