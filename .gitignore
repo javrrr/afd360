@@ -4,6 +4,13 @@ coverage/
 *.log
 .DS_Store
 
+# Internal planning / development docs — kept on the author's disk, never
+# tracked or published (also keeps them out of the npm tarball).
+/PLAN.md
+/PRD.md
+/docs/design-orphan-prune.md
+/docs/phase2-backlog.md
+
 # afd360 working state — keep state/<org>.json but ignore local overrides
 .afd360/plan.json
 .afd360/metadata-deploy/

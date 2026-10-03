@@ -16,8 +16,7 @@ workbook or Agentforce agent queries over that data.
   relationships, calculated measurements + dimensions), `Visualization`,
   `Dashboard`.
 
-See [`PLAN.md`](./PLAN.md) for milestone history and
-[`docs/resources.md`](./docs/resources.md) for the full resource reference.
+See [`docs/resources.md`](./docs/resources.md) for the full resource reference.
 
 > **Building manifests with an AI coding assistant?** See
 > [`AGENTS.md`](./AGENTS.md) for operational guidance and
@@ -181,9 +180,9 @@ the resource modules and codified in afd360's behavior. Notable:
 - SearchIndex input rejects output-only name fields (`sourceDmoName`) with opaque 500 (C-series).
 - `createRelationships` requires both source and target DMOs mapped first (E1 resolved).
 
-See [`PLAN.md` Appendix A](./PLAN.md#appendix-a--operational-quirks-hard-won-from-prior tooling--a parallel internal project)
-for the full list, and [`docs/resources.md`](./docs/resources.md) for
-per-resource reference.
+Each quirk is documented inline in the corresponding resource module under
+[`src/resources/`](./src/resources/); [`docs/resources.md`](./docs/resources.md)
+carries the per-resource reference.
 
 ## Development
 

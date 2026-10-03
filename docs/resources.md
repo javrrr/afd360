@@ -2,8 +2,9 @@
 
 Every afd360 resource is a TypeScript class in `src/resources/`. This page
 summarizes the authored props, defaults, and the operational quirks each
-resource codifies. For anything below marked **quirk X**, see
-[`PLAN.md` Appendix A](../PLAN.md#appendix-a--operational-quirks-hard-won-from-prior tooling--a parallel internal project).
+resource codifies. For anything below marked **quirk X**, see the inline
+operational-quirk notes in the corresponding module under
+[`../src/resources/`](../src/resources/).
 
 Each construct's first argument is its parent `Stack`; the second is a
 logical id unique within the stack; the third is the props object.
