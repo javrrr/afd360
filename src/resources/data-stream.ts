@@ -313,7 +313,7 @@ function salesforceHomeDloName(sourceObject: string): string {
  * Same-org CRM (Home) stream. Reads this org's own Salesforce objects
  * (standard or custom) into a DLO via the built-in Salesforce_Home connector.
  *
- * Confirmed live on a live org () via a throwaway Lead_Home create that
+ * Confirmed live on a live org via a throwaway Lead_Home create that
  * iterated the 400s to a clean success — the platform auto-introspected the
  * sObject and materialized all 61 columns from a PK-only input. Key shape
  * facts, several of which differ from the AwsS3 / GET-response intuition:
@@ -825,7 +825,7 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
       return false;
     };
     // `GET /ssot/data-streams` is server-capped at ~10 results per page — a
-    // `limit`/`batchSize` of 200 does NOT widen it (confirmed live, a live org org).
+    // `limit`/`batchSize` of 200 does NOT widen it (confirmed live, a live org).
     // A single-page `list()` therefore misses a stream that sorts past the cap,
     // so an existing stream (e.g. left by a lost-state partial deploy) is
     // misclassified as `create` and the platform 400s with
@@ -943,7 +943,7 @@ export const DataStreamResource: Resource<DataStreamResourceProps, DataStreamOut
     // via the Mapping, not a construct edge), so their relative order is
     // arbitrary and the stream often goes first. At THIS point the DLO delete
     // therefore can't land no matter how long we retry — live-confirmed
-    // (a live org, 2026-10-02): the DLO was still present minutes after this ran,
+    // (2026-10-02): the DLO was still present minutes after this ran,
     // and only a FRESH delete issued AFTER the DMO was gone succeeded (the
     // earlier 204s did not land late). So `destroy` sets `ctx.deferDloCleanup`;
     // we register the DLO there and let its post-loop sweep delete it once every

@@ -171,12 +171,12 @@ writes live credential material to the manifest or state.
 
 ## Resource quirks
 
-The Connect API has ~15 operational quirks that both prior tooling and
-a parallel internal project had to discover in production — all documented inline in
-the resource modules and codified in afd360's behavior. Notable:
+The Connect API has ~15 operational quirks that only surface in
+production use — all documented inline in the resource modules and
+codified in afd360's behavior. Notable:
 
 - DataStream `PROCESSING → ERROR` without ingestion traffic; recovery is delete+recreate (A4).
-- DMO `get()` historically 500'd "not found"; now clean 404 on dev-org — afd360 handles both (B1).
+- DMO `get()` historically 500'd "not found"; now clean 404 on current releases — afd360 handles both (B1).
 - SearchIndex input rejects output-only name fields (`sourceDmoName`) with opaque 500 (C-series).
 - `createRelationships` requires both source and target DMOs mapped first (E1 resolved).
 

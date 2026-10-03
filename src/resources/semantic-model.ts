@@ -16,7 +16,7 @@ import type { CalculatedInsight } from "./calculated-insight.js";
  *
  * There is NO data-360-sdk service for semantic models, so this resource talks
  * raw Connect REST through `connectRequest` (see src/client/rest.ts). The wire
- * contract below was captured firsthand by a live org against a live Data 360
+ * contract below was captured firsthand against a live Data 360
  * org (v64.0, `/ssot/semantic/models`, 2026-10-01) — see
  * feedback_semantic-model-viz-api-surface.md.
  *
@@ -149,7 +149,7 @@ export interface SemanticDataObjectProps {
    * native equivalent of a CI's `WHERE`). Forwarded verbatim; see
    * {@link SemanticFilter}. Omit (or `[]`) for no filter — the wire default.
    *
-   * LIVE (a live org, v64): each filter is `{ operator: "In", values: [...] }`
+   * LIVE (v64): each filter is `{ operator: "In", values: [...] }`
    * (an `In` operator needs ≥2 values) and references a **calculated** field —
    * the server rejects a raw-dimension field ref with "Invalid calculated
    * Field". SDO filters on raw columns are a PERMANENT REST dead end, and
@@ -164,7 +164,7 @@ export interface SemanticDataObjectProps {
   /**
    * Boolean combination of the `filters` by 1-based index, e.g. `"1 AND 2"`.
    * Must sit HERE as a sibling of `filters`, NOT inside a filter object — the
-   * server 400s "Filter logic is empty" otherwise (a live org, live v64).
+   * server 400s "Filter logic is empty" otherwise (live v64).
    * Omit when there are no filters.
    */
   readonly filterLogic?: string;
@@ -238,8 +238,8 @@ export interface SemanticCalculatedMeasurementProps {
  * `[Fact.CloseDate]`-derived month label). Unlike a {@link
  * SemanticCalculatedMeasurementProps}, a dimension is ALWAYS row-level: it
  * carries no `aggregationType`/`level`/`totalAggregationType` (the server
- * fixes `level: "Row"`). Live-confirmed buildable + queryable (a live org,
- * , v64): `POST .../{model}/calculated-dimensions` → 201, and the
+ * fixes `level: "Row"`). Live-confirmed buildable + queryable (v64):
+ * `POST .../{model}/calculated-dimensions` → 201, and the
  * field groups a gateway query cleanly.
  *
  * The `expression` references data-object fields in SINGLE brackets —
@@ -528,7 +528,7 @@ function buildCalcMeasurementBody(cm: ResolvedCalcMeasurement): unknown {
   return body;
 }
 
-// Live-confirmed shape (a live org, , v64). A dimension is always
+// Live-confirmed shape (v64). A dimension is always
 // row-level: `level: "Row"` is fixed and the measurement-only agg fields are
 // absent. `filters`/`isOverrideBase`/`overriddenProperties` are platform-fixed
 // scaffolding (empty/false), not author-settable — SDO filtering is a dead end
@@ -915,7 +915,7 @@ function resolveMeasure(m: SemanticMeasure): ResolvedMeasure {
  * A base-model relationship MUST be `joinType: "Auto"`. Explicit join types
  * (`Left`/`Inner`/…) 400 with "Relationship ... in model must have the 'AUTO'
  * join type. Explicit join types are only permitted for relationships within
- * logical views." (live-verified v64, a live org). afd360 only builds base-model
+ * logical views." (live-verified v64). afd360 only builds base-model
  * relationships today, so fast-fail anything else rather than let it reach the
  * server as an opaque 400. Explicit LEFT/INNER semantics need a logical view —
  * not yet an afd360 construct.

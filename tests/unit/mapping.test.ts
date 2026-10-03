@@ -363,7 +363,7 @@ describe("MappingResource.create (DLO-never-materialized timeout message)", () =
       // Derived name resolves (fast path) but the DLO never exposes fields —
       // a provisioning lag. The readiness poll must time out. (NOT a
       // never-ingested condition: afd360 connectors declare the DLO schema up
-      // front, so fields appear at stream-create — a live org corrected the
+      // front, so fields appear at stream-create — a live run corrected the
       // original "push data first" framing on 2026-10-02.)
       (ctx.client.dataLakeObjects.get as ReturnType<typeof vi.fn>).mockResolvedValue({
         fields: [],

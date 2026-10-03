@@ -345,7 +345,7 @@ interface ConnectionOpts {
    * DataStream uses as its `datasource` — distinct from the connection's dev
    * `name`. For the built-in Home connector the platform reports
    * name="SalesforceDotCom_Home" but dataSource="Salesforce_Home" (confirmed
-   * live on a live org, ). Set by {@link Connection.salesforceHome}.
+   * live on a live org). Set by {@link Connection.salesforceHome}.
    */
   readonly dataSourceName?: string;
 }

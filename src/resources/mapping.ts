@@ -194,7 +194,7 @@ export const MappingResource: Resource<MappingResourceProps, MappingOutput> = {
  * sibling `PR_<stream>_<object>_<hash>__dll` profile DLO), so the derived name doesn't exist.
  * Fast path: if the derived name resolves, use it. Fallback: list DLOs and match the data DLO.
  *
- * Two platform wrinkles the fallback must survive (both a live org live-confirmed):
+ * Two platform wrinkles the fallback must survive (both live-confirmed):
  *  - **Profile sibling.** A `PR_`-prefixed profile DLO is NOT a Mapping source — exclude it. It
  *    can even keep the *untruncated* object name (its hash segment is shorter), so a naive
  *    `includes(token)` would wrongly resolve the Mapping to the profile DLO. Exclude `PR_` on the
@@ -257,7 +257,7 @@ async function resolveDloName(ctx: ResourceContext, derivedName: string): Promis
  * message. afd360's connectors all declare the DLO schema UP FRONT — IngestApi
  * via its ConnectionSchema, S3/Snowflake via the stream's `sourceFields` — so
  * the DLO's fields materialize at stream-CREATE, not on first ingest
- * (a live org live-confirmed 2026-10-02: a pre-ingest IngestApi DLO already
+ * (live-confirmed 2026-10-02: a pre-ingest IngestApi DLO already
  * exposes all its schema fields at rowcount 0). A timeout here therefore means
  * a provisioning lag (the DLO is still settling) or a wrong DLO name (the other
  * cause; `resolveDloName` handles that upstream) — NOT a missing ingest. The
@@ -313,7 +313,7 @@ function extractDloFieldArray(raw: unknown): unknown[] {
 
 /**
  * The set of a DLO's live field dev-names. The field dev-name lives under
- * `name` — live-verified on a live org (a live org, 2026-10-01): each
+ * `name` — live-verified on a live org (2026-10-01): each
  * `dataLakeFieldInfoRepresentation` entry is
  * `{ dataType, isPrimaryKey, label, name }`, e.g. `name: "BillingState__c"`,
  * and it already carries the double-c flatten for custom fields

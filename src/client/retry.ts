@@ -109,7 +109,7 @@ function statusOf(err: unknown): number | undefined {
  * `ENTITY_SAVE_ERROR "Error getting FactTable <dmo>__dlm"` /
  * `"Cannot find type for node <dmo>__dlm.<field>"`. The condition is purely
  * transient: the identical create succeeds once the fact table lands —
- * a live org live-observed ~90s on a live org (2026-10-01), confirming it's
+ * live-observed ~90s on a live org (2026-10-01), confirming it's
  * timing, not a bad definition. Correct ordering (CI after Mapping) is
  * necessary but insufficient; this predicate lets the CI create *wait out*
  * the materialization instead of aborting the deploy.
@@ -131,7 +131,7 @@ export function isFactTableNotReady(err: unknown): boolean {
  * semantic-model dependents were *just* deleted (e.g. a recreate drain, or a
  * reverse-topo destroy/prune) can 412 with `MATCH_PRECONDITION_FAILED`
  * ("...referenced in other features") because the reference hasn't cleared
- * yet. Transient: a retry seconds later succeeds — a live org live-observed on
+ * yet. Transient: a retry seconds later succeeds — live-observed on
  * a live org (2026-10-01). Deleting the dependents in the right order is
  * necessary but insufficient; this predicate lets the parent delete wait for
  * the reference to drop.

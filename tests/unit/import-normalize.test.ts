@@ -16,7 +16,7 @@ describe("normalizeLogicalId", () => {
     ).toBe("AgentOpt");
   });
 
-  it("leaves prior tooling-style short-hex tails alone (v1 scope — ambiguous with word suffixes)", () => {
+  it("leaves legacy-style short-hex tails alone (v1 scope — ambiguous with word suffixes)", () => {
     // `_tddogb` looks generated, but `_javier` looks like a word — we can't
     // distinguish purely by regex. v1 preserves both; users hand-edit or
     // pass --preserve-names.

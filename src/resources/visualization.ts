@@ -11,7 +11,7 @@ import type { SemanticModel } from "./semantic-model.js";
  *
  * Like SemanticModel there is NO data-360-sdk service for this surface, so the
  * resource talks raw Connect REST through `connectRequest` (see
- * src/client/rest.ts). The wire contract was captured firsthand by a live org
+ * src/client/rest.ts). The wire contract was captured firsthand
  * against a live org (v67.0, `/tableau/visualizations`, round-trip POST 201 →
  * GET 200 → DELETE 204, 2026-09-30) — see
  * feedback_semantic-model-viz-api-surface.md.
@@ -29,7 +29,7 @@ import type { SemanticModel } from "./semantic-model.js";
  * apiNames (e.g. `WinRatePct`), NOT the DMO/CIO dev names (`WinRatePct__c`).
  *
  * All three originally-guessed shapes are now CONFIRMED against a live v67.0
- * capture (a live org, 2026-10-01): `dataSource.id` is the model GET's `.id`
+ * capture (2026-10-01): `dataSource.id` is the model GET's `.id`
  * (2SM record id — resolved + sent; name-only binding remains unverified so we
  * always resolve the id), `visualSpecification.marks.panes` is a SINGLE object
  * (not an array) with a parallel `marks.headers`, and `view` carries a populated
@@ -166,7 +166,7 @@ function buildFieldsObject(fields: ReadonlyArray<ResolvedField>): Record<string,
 
 /** `marks` scaffold — chart type is `marks.panes.type` (panes is a SINGLE
  * OBJECT, NOT an array), with a parallel `marks.headers` object. Shape
- * confirmed live by a live org (v67.0 capture, 2026-10-01). */
+ * confirmed live (v67.0 capture, 2026-10-01). */
 function buildMarks(chartType: string): Record<string, unknown> {
   return {
     fields: {},
@@ -202,7 +202,7 @@ function buildVisualSpecification(p: VisualizationResourceProps): Record<string,
 
 /** Default `view` scaffold — a populated viewSpecification (NOT `{}`); the
  * server-managed `id`/`isOriginal` are never emitted and `name`/`label` are
- * freshly set. Shape confirmed live by a live org (v67.0 capture, 2026-10-01).
+ * freshly set. Shape confirmed live (v67.0 capture, 2026-10-01).
  * Overridden wholesale by `props.view`. */
 function buildView(p: VisualizationResourceProps): Record<string, unknown> {
   if (p.view) return p.view;
