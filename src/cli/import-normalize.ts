@@ -8,7 +8,7 @@
  *   - `NTO_Products_tddoas_50ccbe07_7a07_466b_a43f_514fb01de06d` — IngestApi
  *     connection name. Trailing UUID-5 chain.
  *   - `AgentOpt_fac25829_be36_44d3_859d_26be3a611a76` — same shape.
- *   - `NTO_GoodsProduct_Search_tddogb` — prior tooling-style 5-char tail.
+ *   - `NTO_GoodsProduct_Search_tddogb` — legacy-style 5-char tail.
  *   - `AgentOpt_Tag_03837773` — digit counter.
  *
  * Strategy: apply patterns in priority order, stop at first match. Always
@@ -41,7 +41,7 @@ export function normalizeLogicalId(apiName: string): string {
   const digits = apiName.match(/^(.+?)_\d{4,}$/);
   if (digits && digits[1]!.length >= MIN_PREFIX) return digits[1]!;
 
-  // NOTE on short "hex-ish" tails: prior tooling-style names like `NTO_GoodsProduct_
+  // NOTE on short "hex-ish" tails: legacy-style names like `NTO_GoodsProduct_
   // Search_tddogb` use a 5-6 char lowercase-alphanumeric suffix. A regex for
   // that pattern also matches legitimate word-suffixed names like
   // `cdp_data_javier` — we can't reliably distinguish without a dictionary.

@@ -248,7 +248,7 @@ describe("SearchIndexResource.create — payload shape", () => {
   });
 });
 
-describe("SearchIndexResource.create — orphan-safety gate (a live org)", () => {
+describe("SearchIndexResource.create — orphan-safety gate", () => {
   const resourceProps = {
     developerName: "PtIdx",
     label: "PtIdx Search",

@@ -317,7 +317,7 @@ export const SearchIndexResource: Resource<SearchIndexResourceProps, SearchIndex
         { attempts: 6, intervalMs: 15_000, backoff: 1, jitter: 0 },
       );
     } catch (err) {
-      // Orphan-safety gate (reported by a live org, live a live org org,
+      // Orphan-safety gate (reported from a live org,
       // 2026-10-01). The create POST is ASYNC and SIDE-EFFECTING: the platform
       // can LAND the index record on-org and STILL return a "not fully
       // materialized" / 5xx error because the source DMO's fact table isn't

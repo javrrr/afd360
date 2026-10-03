@@ -368,7 +368,7 @@ delete-and-recreate (same policy as every other resource).
   same pass-through contract as a calculated-measurement `expression`. Omitting
   `filters` (or passing `[]`) is the wire default `filters: []` and hashes
   identically to a pre-filters manifest, so adding the prop never triggers a
-  spurious recreate. Live grammar (a live org, v64):
+  spurious recreate. Live grammar (v64):
     - Each filter is `{ operator: "In", values: [...] }`; the `In` operator
       requires **≥2 values** (fewer → "Values field must contain at least two
       values for the operator: In").
@@ -396,7 +396,7 @@ delete-and-recreate (same policy as every other resource).
       (there is no data-object PATCH), so the calc field can never pre-exist the
       filter that would reference it (circular). The only other path, logical
       views, is UI-only (no REST surface). So a model-level WHERE on a raw column
-      is a **REST dead end** (live-confirmed, a live org,  v64).
+      is a **REST dead end** (live-confirmed, a live org v64).
       **Workaround:** reframe the WHERE as a conditional-aggregation
       `calculatedMeasurement`, e.g. `sum(if [Fact.Status] = "Won" then 1 else 0
       end)` — live-validated, needs no filter.
@@ -411,7 +411,7 @@ delete-and-recreate (same policy as every other resource).
   `label`, `dataType` (`Text` default / `Date` / `Boolean`), `displayCategory`
   (`Discrete` default), `semanticDataType`, `sortOrder`, `isVisible`.
   Live-confirmed buildable **and queryable** — a gateway group-by on the calc
-  dim returns clean partitions (a live org,  v64). Note this is for its
+  dim returns clean partitions (a live org v64). Note this is for its
   **own value** (derived groupings); it does **not** enable raw-column SDO
   filters — see the filters caveat above.
 - **Cio data objects reject type coercion:** a measure's `storageDataType`

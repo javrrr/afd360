@@ -13,7 +13,7 @@ import type { Visualization } from "./visualization.js";
  *
  * Like SemanticModel and Visualization there is NO data-360-sdk service for this
  * surface, so the resource talks raw Connect REST through `connectRequest` (see
- * src/client/rest.ts). The wire contract was captured firsthand by a live org
+ * src/client/rest.ts). The wire contract was captured firsthand
  * against a live org (v67.0, `/tableau/dashboards`, POST accepted, 2026-10-01).
  *
  * Create is a SINGLE POST. We build the body fresh (never round-tripping a GET),
