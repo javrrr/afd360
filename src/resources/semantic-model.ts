@@ -388,7 +388,14 @@ export interface SemanticModelResourceProps {
   readonly dataObjects: ReadonlyArray<ResolvedDataObject>;
   readonly relationships: ReadonlyArray<ResolvedRelationship>;
   readonly calculatedMeasurements: ReadonlyArray<ResolvedCalcMeasurement>;
-  readonly calculatedDimensions: ReadonlyArray<ResolvedCalcDimension>;
+  /**
+   * Undefined (key absent) when the author supplied none — NOT `[]`. A model
+   * with no calculated dimensions must hash IDENTICALLY to one authored before
+   * this prop existed (hashProps drops undefined keys), or every pre-existing
+   * SemanticModel would drop+recreate on the upgrade deploy (no PATCH for TN
+   * constructs → destructive). Same hash-stability contract as `filters`.
+   */
+  readonly calculatedDimensions?: ReadonlyArray<ResolvedCalcDimension>;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -600,7 +607,7 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
         await post(`${modelPath}/calculated-measurements`, buildCalcMeasurementBody(cm));
       }
       // 5. calculated dimensions (reference SDO fields, so after data objects)
-      for (const cd of props.calculatedDimensions) {
+      for (const cd of props.calculatedDimensions ?? []) {
         await post(`${modelPath}/calculated-dimensions`, buildCalcDimensionBody(cd));
       }
     } catch (err) {
@@ -774,7 +781,10 @@ export class SemanticModel extends Construct {
       dataObjects,
       relationships,
       calculatedMeasurements,
-      calculatedDimensions,
+      // Omit the key entirely when empty so the hash is identical to a manifest
+      // authored before this prop existed (prevents a destructive recreate of
+      // every pre-existing SemanticModel on upgrade). Mirrors `filters`.
+      ...(calculatedDimensions.length > 0 ? { calculatedDimensions } : {}),
     };
 
     this.dependsOn = [...deps, ...(props.dependsOn ?? []), ...(opts.dependsOn ?? [])];
