@@ -161,6 +161,33 @@ export function isReferencedPreconditionFailure(err: unknown): boolean {
 }
 
 /**
+ * A semantic model's `create` validates its referenced data objects against the
+ * live query surface. When a source is a CalculatedInsight that was *just*
+ * created or recreated, the model create 404s `SEMANTIC_ENTITY_NOT_EXIST` (the
+ * CI's output data object isn't queryable yet) even though the CI itself is
+ * `ACTIVE` — field-reported 2026-10-04. ACTIVE means the CI definition compiled
+ * and scheduled; it does NOT mean the first compute has produced a queryable
+ * data object. The lag is transient: the identical create succeeds once the CI
+ * has computed, so this predicate lets the dependent model create wait it out
+ * (the compute-wait), mirroring {@link isFactTableNotReady} one layer up.
+ *
+ * NB: `SEMANTIC_ENTITY_NOT_EXIST` is ALSO what a replace-only `put` to a
+ * nonexistent model returns and what `read`'s isNotFound keys on — but this
+ * predicate is only ever applied to the semantic-model CREATE call, where that
+ * code can only mean "a referenced upstream entity isn't queryable yet", never
+ * "the model is absent" (we're creating it). A genuinely wrong CI name matches
+ * too and exhausts the budget before the real 404 surfaces — accepted, same as
+ * isFactTableNotReady.
+ */
+export function isSemanticSourceNotReady(err: unknown): boolean {
+  return (
+    errBodyIncludes(err, "SEMANTIC_ENTITY_NOT_EXIST") ||
+    errBodyIncludes(err, "does not exist") ||
+    errBodyIncludes(err, "was not found")
+  );
+}
+
+/**
  * Shared "resource is already gone" predicate. Use inside `read()` to return
  * `null`, or inside `delete()` to swallow the error as idempotent success.
  *

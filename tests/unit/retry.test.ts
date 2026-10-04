@@ -6,6 +6,7 @@ import {
   isNotFound,
   isFactTableNotReady,
   isReferencedPreconditionFailure,
+  isSemanticSourceNotReady,
 } from "../../src/client/retry.js";
 
 const fastOpts = { intervalMs: 1, jitter: 0 };
@@ -186,5 +187,41 @@ describe("isReferencedPreconditionFailure", () => {
       { ...fastOpts, attempts: 6 },
     );
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("isSemanticSourceNotReady (semantic-model compute-wait)", () => {
+  it("matches the SEMANTIC_ENTITY_NOT_EXIST 404 a model-over-CI create returns", () => {
+    expect(
+      isSemanticSourceNotReady({
+        status: 404,
+        body: '[{"errorCode":"SEMANTIC_ENTITY_NOT_EXIST","message":"entity not queryable"}]',
+      }),
+    ).toBe(true);
+    expect(
+      isSemanticSourceNotReady({ message: "data object does not exist" }),
+    ).toBe(true);
+    expect(isSemanticSourceNotReady({ message: "entity was not found" })).toBe(true);
+  });
+
+  it("does not match unrelated errors", () => {
+    expect(isSemanticSourceNotReady({ status: 400, message: "invalid field apiName" })).toBe(false);
+    expect(isSemanticSourceNotReady({ status: 500, body: "INTERNAL_ERROR" })).toBe(false);
+    expect(isSemanticSourceNotReady(null)).toBe(false);
+    expect(isSemanticSourceNotReady("nope")).toBe(false);
+  });
+
+  it("drives retryOn to wait out the CI compute lag then create the model", async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 404, body: '[{"errorCode":"SEMANTIC_ENTITY_NOT_EXIST"}]' })
+      .mockResolvedValue("created");
+    const out = await retryOn(
+      fn,
+      (err) => is5xx(err) || isSemanticSourceNotReady(err),
+      { ...fastOpts, attempts: 5 },
+    );
+    expect(out).toBe("created");
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });

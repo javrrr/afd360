@@ -597,6 +597,47 @@ describe("SemanticModelResource.create — single-POST semantics", () => {
     // must not fire a cleanup delete.
     expect(semanticModels.delete).not.toHaveBeenCalled();
   });
+
+  it("waits out the upstream-CI compute lag (SEMANTIC_ENTITY_NOT_EXIST) then creates", async () => {
+    vi.useFakeTimers();
+    try {
+      const { stack, dmo } = stackWith();
+      const sm = new SemanticModel(stack, "Model", {
+        dataObjects: [
+          { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+        ],
+      });
+      // First POST: the referenced CI is ACTIVE but its data object isn't
+      // queryable yet (first compute hasn't landed) → 404 SEMANTIC_ENTITY_NOT_EXIST.
+      // Second: computed, create succeeds.
+      semanticModels.create
+        .mockRejectedValueOnce({ status: 404, body: '[{"errorCode":"SEMANTIC_ENTITY_NOT_EXIST"}]' })
+        .mockResolvedValue({});
+      semanticModels.get.mockResolvedValue({ apiName: "Model" });
+
+      const p = SemanticModelResource.create(ctx(), sm.props);
+      await vi.runAllTimersAsync();
+      await p;
+
+      expect(semanticModels.create).toHaveBeenCalledTimes(2);
+      expect(semanticModels.put).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT retry an unrelated create 400 (a real bad-definition fails fast)", async () => {
+    const { stack, dmo } = stackWith();
+    const sm = new SemanticModel(stack, "Model", {
+      dataObjects: [
+        { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
+      ],
+    });
+    semanticModels.create.mockRejectedValue({ status: 400, body: { message: "invalid aggregation type" } });
+
+    await expect(SemanticModelResource.create(ctx(), sm.props)).rejects.toMatchObject({ status: 400 });
+    expect(semanticModels.create).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("SemanticModel construct — reciprocal Mapping wiring", () => {
