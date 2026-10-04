@@ -1,7 +1,13 @@
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn5xx, isNotFound as baseIsNotFound } from "../client/retry.js";
+import {
+  retryOn,
+  retryOn5xx,
+  is5xx,
+  isSemanticSourceNotReady,
+  isNotFound as baseIsNotFound,
+} from "../client/retry.js";
 import type { SemanticModelInputRepresentation } from "tableau-semantics-sdk";
 import type { DMO } from "./dmo.js";
 import type { CalculatedInsight } from "./calculated-insight.js";
@@ -633,10 +639,34 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
     // mid-sequence failure stranded a half-built shell that the next deploy could
     // neither re-POST (409 duplicate) nor usefully adopt. A single POST has no
     // partial-sequence to strand — a failed apply leaves nothing to overwrite and
-    // the next deploy re-POSTs cleanly. retryOn5xx mirrors the old per-POST
-    // transient-500 retry.
-    await retryOn5xx(() =>
-      ctx.semanticsClient.semanticModels.create(buildModelBody(props)),
+    // the next deploy re-POSTs cleanly.
+    //
+    // Retry policy: baseline 5xx PLUS the compute-wait (isSemanticSourceNotReady).
+    // A model whose data object is a CalculatedInsight 404s SEMANTIC_ENTITY_NOT_EXIST
+    // if the CI was JUST created/recreated — the CI is ACTIVE but its output data
+    // object isn't queryable until the first compute lands. This bites on a fresh
+    // deploy (model after CI) AND on a recreate cascade (CI recreated, then the
+    // drained model recreated right after). Ordering (model dependsOn the CI) is
+    // enforced but insufficient: ACTIVE ≠ computed. Generous budget — the first CI
+    // compute can take minutes (12 × 15s, ×1.5 up to 30s ⇒ ~5 min) — rather than
+    // abort the deploy. See isSemanticSourceNotReady for the full note.
+    await retryOn(
+      () => ctx.semanticsClient.semanticModels.create(buildModelBody(props)),
+      (err) => is5xx(err) || isSemanticSourceNotReady(err),
+      {
+        attempts: 12,
+        intervalMs: 15_000,
+        backoff: 1.5,
+        maxIntervalMs: 30_000,
+        onRetry: (err, attempt, total) => {
+          if (isSemanticSourceNotReady(err)) {
+            process.stderr.write(
+              `  waiting for an upstream data object (e.g. a CalculatedInsight) to become ` +
+                `queryable before creating SemanticModel "${props.apiName}" (attempt ${attempt}/${total})…\n`,
+            );
+          }
+        },
+      },
     );
 
     const hydrated = await SemanticModelResource.read(ctx, props.apiName);
