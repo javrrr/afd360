@@ -125,6 +125,15 @@ Key facts to internalize:
 `docs/resources.md` has the full prop reference for each. Read that
 when you need exact field names or shapes.
 
+For `Visualization` / `Dashboard`, also read
+`skills/afd360/references/viz-selection.md` before generating — it
+carries the viz coverage matrix (what afd360 emits natively vs. what
+needs the `visualSpecification` escape hatch) and the metadata → viz
+selection rubric + dashboard-composition patterns. Only the Vizql
+Cartesian marks (`Bar`/`Line`/`Area`) are construct-native today;
+`Donut`/`Text`(KPI) are expressible but unvalidated, and
+`Table`/`Radial`/`Map`/`Flow` layouts need the escape hatch.
+
 ## Choosing what to generate
 
 For each user request, walk this table from top to bottom. Stop at

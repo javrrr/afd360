@@ -88,6 +88,14 @@ Read the connector-specific reference for the user's source system:
 - **Snowflake**: see [connector-snowflake.md](references/connector-snowflake.md)
 - **IngestApi**: see [connector-ingestapi.md](references/connector-ingestapi.md)
 
+## Choosing a Tableau Next visualization
+
+Before generating any `Visualization` or `Dashboard`, read
+[viz-selection.md](references/viz-selection.md) — the coverage matrix
+(what afd360 can emit today vs. what needs the escape hatch) and the
+metadata → viz selection rubric + dashboard-composition patterns. Never
+pick a viz the construct can't faithfully emit.
+
 ## Env-var conventions
 
 | Token | When |
