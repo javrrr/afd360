@@ -2,7 +2,14 @@ import type { Data360Client } from "data-360-sdk";
 import { Construct, type Resource } from "../core/construct.js";
 import type { Stack } from "../core/app.js";
 import { hashProps } from "../core/hash.js";
-import { retryOn, retryOn5xx, is5xx, isFactTableNotReady, isNotFound } from "../client/retry.js";
+import {
+  retryOn,
+  retryOn5xx,
+  is5xx,
+  isFactTableNotReady,
+  isReferencedPreconditionFailure,
+  isNotFound,
+} from "../client/retry.js";
 import type { DMO } from "./dmo.js";
 
 /**
@@ -208,7 +215,32 @@ export const CalculatedInsightResource: Resource<
 
   async delete(ctx, apiName): Promise<void> {
     try {
-      await retryOn5xx(() => ctx.client.calculatedInsights.delete(apiName, { timeout: 60_000 }));
+      // Two-layer retry (mirrors DMO.delete — see isReferencedPreconditionFailure).
+      // INNER: baseline fast 5xx retry for the opaque transient 500. OUTER: the
+      // reference-clear lag on a slower budget (6 × 5s, ×1.5 up to 30s ⇒ ~1 min).
+      // On a CI RECREATE cascade the drain deletes the CI's SemanticModel
+      // consumer first, but a SemanticModel HARD-BLOCKS deleting the CIs it
+      // references and the platform's reference graph clears asynchronously — so
+      // this CI delete can still 412 / DELETE_FAILED ("...because of these
+      // dependencies") for a few seconds after the model is gone. Correct delete
+      // ordering is enforced elsewhere (the recreate drain / reverse-topo
+      // destroy); this closes the async gap by waiting for the reference to drop.
+      await retryOn(
+        () => retryOn5xx(() => ctx.client.calculatedInsights.delete(apiName, { timeout: 60_000 })),
+        isReferencedPreconditionFailure,
+        {
+          attempts: 6,
+          intervalMs: 5_000,
+          backoff: 1.5,
+          maxIntervalMs: 30_000,
+          onRetry: (_err, attempt, total) => {
+            process.stderr.write(
+              `  waiting for references to CalculatedInsight "${apiName}" to clear before ` +
+                `delete (attempt ${attempt}/${total})…\n`,
+            );
+          },
+        },
+      );
     } catch (err) {
       if (isNotFound(err)) return;
       throw err;

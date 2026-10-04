@@ -236,6 +236,28 @@ describe("CalculatedInsightResource.delete", () => {
     });
     await expect(CalculatedInsightResource.delete(ctx, "x__cio")).resolves.toBeUndefined();
   });
+
+  it("waits out a transient referenced-delete block (CI recreate cascade) then succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = mockCtx();
+      const del = ctx.client.calculatedInsights.delete as ReturnType<typeof vi.fn>;
+      // First attempt: the SemanticModel reference hasn't cleared yet (the drain
+      // deleted the model, but the platform's reference graph lags). Second: clear.
+      del
+        .mockRejectedValueOnce({
+          status: 400,
+          message: "can't delete this calculated insight because of these dependencies",
+        })
+        .mockResolvedValue(undefined);
+      const p = CalculatedInsightResource.delete(ctx, "x__cio");
+      await vi.runAllTimersAsync();
+      await expect(p).resolves.toBeUndefined();
+      expect(del).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("CalculatedInsightResource.read", () => {

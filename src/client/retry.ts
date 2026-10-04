@@ -127,20 +127,36 @@ export function isFactTableNotReady(err: unknown): boolean {
 
 /**
  * The platform's reference graph propagates asynchronously *after* a dependent
- * resource is deleted. Deleting a DMO whose CalculatedInsight / SearchIndex /
- * semantic-model dependents were *just* deleted (e.g. a recreate drain, or a
- * reverse-topo destroy/prune) can 412 with `MATCH_PRECONDITION_FAILED`
- * ("...referenced in other features") because the reference hasn't cleared
- * yet. Transient: a retry seconds later succeeds — live-observed on
- * a live org (2026-10-01). Deleting the dependents in the right order is
- * necessary but insufficient; this predicate lets the parent delete wait for
- * the reference to drop.
+ * resource is deleted. Deleting a parent whose dependents were *just* deleted
+ * (e.g. a recreate drain, or a reverse-topo destroy/prune) can fail because the
+ * back-reference hasn't cleared yet. Two shapes seen on live orgs:
+ *
+ *   - **DMO** → `412 MATCH_PRECONDITION_FAILED` ("...referenced in other
+ *     features") when a just-deleted CalculatedInsight / SearchIndex /
+ *     semantic-model dependent's reference lingers (live-observed 2026-10-01).
+ *   - **CalculatedInsight** → `DELETE_FAILED` ("can't delete this calculated
+ *     insight because of these dependencies") when a just-deleted SemanticModel
+ *     (which HARD-BLOCKS deleting the CIs it references) still points at it.
+ *     This bites specifically on a CI *recreate* cascade: the drain deletes the
+ *     SemanticModel first, but the CI delete in the forward loop can still race
+ *     the reference-clear (field-reported 2026-10-04).
+ *
+ * Both are transient — a retry seconds later succeeds once the reference drops.
+ * Deleting the dependents in the right order is necessary but insufficient (the
+ * drain / reverse-topo already does that); this predicate lets the parent delete
+ * wait out the async gap. A delete blocked by a *genuinely* still-present
+ * dependent matches too and simply exhausts the retry budget before the real
+ * error surfaces — the same accepted trade-off as {@link isFactTableNotReady}.
  */
 export function isReferencedPreconditionFailure(err: unknown): boolean {
   if (statusOf(err) === 412) return true;
   return (
     errBodyIncludes(err, "MATCH_PRECONDITION_FAILED") ||
-    errBodyIncludes(err, "referenced in other features")
+    errBodyIncludes(err, "referenced in other features") ||
+    // CalculatedInsight delete-block ("...because of these dependencies").
+    // Substring "dependenc" covers dependency/dependencies/dependent.
+    errBodyIncludes(err, "DELETE_FAILED") ||
+    errBodyIncludes(err, "dependenc")
   );
 }
 

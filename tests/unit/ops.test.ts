@@ -358,6 +358,37 @@ describe("computeRecreateDrainOrder (recreate delete-ordering)", () => {
     );
     expect(drain).toEqual(["Viz", "Model", "CI"]);
   });
+
+  it("drains a recreated CI's SemanticModel/Viz/Dashboard consumers before the CI (field-reported 2026-10-04)", () => {
+    // The reported gap: a CI hash-drifts (recreate) while its downstream
+    // SemanticModel → Visualization → Dashboard consumers are UNCHANGED (noop,
+    // only the CI drifted). A SemanticModel hard-blocks deleting the CI it
+    // references, so the CI delete must happen AFTER the consumers are drained.
+    // This locks blast-radius + drain across that exact topology end-to-end.
+    const forwardOrder = ["CI", "Model", "Viz", "Dash"];
+    const dependents = new Map([
+      ["CI", ["Model"]],
+      ["Model", ["Viz"]],
+      ["Viz", ["Dash"]],
+    ]);
+    const ops: Op[] = [
+      { uniqueId: "CI", kind: "recreate", construct: { uniqueId: "CI" } as never, plannedHash: "sha256:x" },
+      { uniqueId: "Model", kind: "noop", construct: { uniqueId: "Model" } as never, plannedHash: "sha256:x" },
+      { uniqueId: "Viz", kind: "noop", construct: { uniqueId: "Viz" } as never, plannedHash: "sha256:x" },
+      { uniqueId: "Dash", kind: "noop", construct: { uniqueId: "Dash" } as never, plannedHash: "sha256:x" },
+    ];
+    const cascades = computeBlastRadius(ops, dependents);
+    // Even though the consumers are noop, the recreated CI's blast radius covers
+    // all three transitively.
+    expect(cascades.get("CI")).toEqual(expect.arrayContaining(["Model", "Viz", "Dash"]));
+
+    const drain = computeRecreateDrainOrder(cascades, [...forwardOrder].reverse(), allDeletable);
+    // Children-first: Dashboard, then Visualization, then SemanticModel — and the
+    // CI (the recreate root) is NOT drained here (the forward loop deletes it
+    // once its consumers are gone).
+    expect(drain).toEqual(["Dash", "Viz", "Model"]);
+    expect(drain).not.toContain("CI");
+  });
 });
 
 describe("collectOrphans (orphan classification)", () => {

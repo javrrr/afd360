@@ -153,6 +153,20 @@ describe("isReferencedPreconditionFailure", () => {
     ).toBe(true);
   });
 
+  it("matches the CalculatedInsight delete-block (DELETE_FAILED / 'dependencies') body", () => {
+    expect(
+      isReferencedPreconditionFailure({
+        status: 400,
+        body: '[{"errorCode":"DELETE_FAILED","message":"can\'t delete this calculated insight"}]',
+      }),
+    ).toBe(true);
+    expect(
+      isReferencedPreconditionFailure({
+        message: "can't delete this calculated insight because of these dependencies",
+      }),
+    ).toBe(true);
+  });
+
   it("does not match unrelated errors", () => {
     expect(isReferencedPreconditionFailure({ status: 404 })).toBe(false);
     expect(isReferencedPreconditionFailure({ status: 400, message: "bad request" })).toBe(false);
