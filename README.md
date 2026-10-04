@@ -198,6 +198,33 @@ against a real org; they're gated on `AFD360_TEST_ORG` and not run by
 default. Per-checkpoint manifests under `tests/integration/` document the
 paved-path scenarios.
 
+## Releasing
+
+After your change is on `main`:
+
+```bash
+git checkout main
+git pull --ff-only
+```
+
+Bump the version (creates the version commit + git tag):
+
+```bash
+npm run release:version:patch
+# or: release:version:minor / release:version:major
+```
+
+Run checks, push `main` and tags, then create a GitHub release with
+auto-generated notes:
+
+```bash
+npm run release:run
+```
+
+The `Publish to npm` GitHub Action is triggered by `release.published` — it
+publishes via npm OIDC trusted publishing (no token in the repo or CI secrets).
+Do **not** run `npm publish` locally.
+
 ## Feedback
 
 File issues at the repo tracker; include an afd360 version, the `sf org
