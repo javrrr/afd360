@@ -16,27 +16,31 @@ import type { CalculatedInsight } from "./calculated-insight.js";
  *
  * Transport is `tableau-semantics-sdk` (`ctx.semanticsClient.semanticModels`),
  * a generated client over the v65 `/ssot/semantic/models` spec. This replaced
- * the hand-rolled `connectRequest` seam that talked v64. The v65 spec models
- * only the ENVELOPE: `semanticModels.put(apiName, body)` is a single
- * create-or-replace upsert of the WHOLE model tree. The sub-collection
+ * the hand-rolled `connectRequest` seam that talked v64. The sub-collection
  * ELEMENT shapes are open objects the SDK does NOT type, so afd360 still owns
  * the exact leaf field names/values below — captured firsthand against a live
- * Data 360 org at v64 (2026-10-01; see feedback_semantic-model-viz-api-surface.md).
+ * Data 360 org at v64 (2026-10-01) and re-confirmed live at v65 (2026-10-04;
+ * see feedback_semantic-model-viz-api-surface.md).
  *
  * v64→v65 MIGRATION: create collapses the old FIVE ordered sub-resource POSTs
  * (shell → data-objects → relationships → calculated-measurements →
- * calculated-dimensions) into ONE nested `put` body. The five v64 path segments
+ * calculated-dimensions) into ONE nested body. The five v64 path segments
  * become camelCase array properties on the body: `semanticDataObjects`,
  * `semanticRelationships`, `semanticCalculatedMeasurements`,
  * `semanticCalculatedDimensions`. DELETE tears the whole thing down.
  *
- * ⚠️ NOT LIVE-VALIDATED AT v65. The leaf names/values here are v64-captured and
- * ported verbatim (the v65 input schemas are open objects, so the SDK can't
- * confirm them at compile time). The v65 spec's two modeled enums hint at
- * possible value deltas — `sourceCreation` (spec enum `Manual|Import` vs our
- * `DataCloud`) and `queryUnrelatedDataObjects` (spec enum `Allow|Disallow` vs
- * our `Union`). Only a live v65 create→get→delete can confirm the full body.
- * Until that passes, this surface is NOT shippable (see SEMANTICS_API_VERSION).
+ * CREATE VERB (live-verified v65, 2026-10-04): the create is the COLLECTION POST
+ * `semanticModels.create(body)` → POST /ssot/semantic/models → 201 — NOT `put`.
+ * `put(apiName, body)` is REPLACE-ONLY: a PUT to a not-yet-existing apiName 404s
+ * (SEMANTIC_ENTITY_NOT_EXIST). The collection POST is absent from the published
+ * spec, so the SDK hand-authors it. Two shell enums keep their v64 spellings —
+ * `sourceCreation: "DataCloud"` and `queryUnrelatedDataObjects: "Union"` — which
+ * the live org ACCEPTS; the spec's modeled values (`Manual|Import`,
+ * `Allow|Disallow`) are REJECTED (the published spec was inverted; the SDK's
+ * exported enum types are live-corrected to match). `dataspace` is a MANDATORY
+ * top-level shell field. A semantic-data-object field `apiName` must be
+ * space-free (alphanumeric + underscore); a space surfaces as an opaque 500
+ * SERVER_INTERNAL_ERROR, so afd360 fast-fails it below (assertApiNameSpaceFree).
  */
 
 /** `Cio` = CalculatedInsight output; `Dmo` = a DLO/DMO. (NOT "Dlm".) */
@@ -613,20 +617,26 @@ export const SemanticModelResource: Resource<SemanticModelResourceProps, Semanti
   },
 
   async create(ctx, props): Promise<SemanticModelOutput> {
-    // Single create-or-replace upsert (v65). The v64 five-step ordered POST
-    // sequence (shell → data-objects → relationships → calc-measurements →
-    // calc-dimensions) collapses into ONE nested `put` body. The afd360 engine
-    // handles idempotency (noop/adopt/recreate) around this; create() always
-    // builds fresh, and a recreate deletes the whole model first.
+    // Single collection POST (v65). The v64 five-step ordered POST sequence
+    // (shell → data-objects → relationships → calc-measurements → calc-dimensions)
+    // collapses into ONE nested body. The afd360 engine handles idempotency
+    // (noop/adopt/recreate) around this; create() always builds fresh, and a
+    // recreate deletes the whole model first.
     //
-    // No rollback dance anymore: the v64 code made create atomic by hand
-    // because a mid-sequence failure stranded a half-built shell that the next
-    // deploy could neither re-POST (409 duplicate) nor usefully adopt. A single
-    // PUT has no partial-sequence to strand — a failed or partial apply is
-    // simply overwritten by the next deploy's create-or-replace PUT. retryOn5xx
-    // mirrors the old per-POST transient-500 retry.
+    // create() is the COLLECTION POST (`semanticModels.create`), NOT `put`.
+    // Live-verified v65 (2026-10-04): `put(apiName, body)` is REPLACE-ONLY — a
+    // PUT to a not-yet-existing apiName 404s (SEMANTIC_ENTITY_NOT_EXIST), it
+    // does not create. The create verb is POST /ssot/semantic/models → 201
+    // (absent from the published spec; hand-authored in the SDK).
+    //
+    // No rollback dance: the v64 code made create atomic by hand because a
+    // mid-sequence failure stranded a half-built shell that the next deploy could
+    // neither re-POST (409 duplicate) nor usefully adopt. A single POST has no
+    // partial-sequence to strand — a failed apply leaves nothing to overwrite and
+    // the next deploy re-POSTs cleanly. retryOn5xx mirrors the old per-POST
+    // transient-500 retry.
     await retryOn5xx(() =>
-      ctx.semanticsClient.semanticModels.put(props.apiName, buildModelBody(props)),
+      ctx.semanticsClient.semanticModels.create(buildModelBody(props)),
     );
 
     const hydrated = await SemanticModelResource.read(ctx, props.apiName);
@@ -947,7 +957,25 @@ function assertAggregationType(where: string, agg: string | undefined): void {
 }
 
 /**
- * Fast-fail on platform constraints that otherwise surface as opaque 400s:
+ * A semantic field `apiName` must be space-free (alphanumeric + underscore) —
+ * display text belongs in `label`. A space surfaces as an opaque 500
+ * SERVER_INTERNAL_ERROR on create (a server-side validation leak, NOT a clean
+ * 400), so fast-fail it with the fix spelled out. Live-verified v65 (2026-10-04).
+ */
+function assertApiNameSpaceFree(where: string, kind: string, apiName: string): void {
+  if (/\s/.test(apiName)) {
+    throw new Error(
+      `${where}: ${kind} apiName "${apiName}" contains whitespace — a semantic field ` +
+        `apiName must be space-free (alphanumeric + underscore); the server 500s otherwise. ` +
+        `Use a space-free apiName (e.g. "${apiName.replace(/\s+/g, "_")}") and put the display ` +
+        `text in \`label\`.`,
+    );
+  }
+}
+
+/**
+ * Fast-fail on platform constraints that otherwise surface as opaque 4xx/5xx:
+ *  - A field `apiName` with whitespace 500s (see assertApiNameSpaceFree).
  *  - A measure's display `dataType` of `Percent` is REJECTED. A natively-Percent
  *    column IS a valid measure — but its type is spelled `Percentage`, not
  *    `Percent`/`Number`. Live-verified v64.
@@ -962,7 +990,11 @@ function validateMeasures(
   measures: ReadonlyArray<ResolvedMeasure>,
 ): void {
   const where = `SemanticModel "${modelApiName}" data object "${dataObjectApiName}"`;
+  for (const d of dimensions) {
+    assertApiNameSpaceFree(where, `dimension "${d.apiName}"`, d.apiName);
+  }
   for (const m of measures) {
+    assertApiNameSpaceFree(where, `measure "${m.apiName}"`, m.apiName);
     if (m.dataType === "Percent") {
       throw new Error(
         `${where}: measure "${m.apiName}" has dataType "Percent", which the semantic ` +

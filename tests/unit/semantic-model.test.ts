@@ -8,11 +8,13 @@ import { CalculatedInsight } from "../../src/resources/calculated-insight.js";
 import type { ResourceContext } from "../../src/core/construct.js";
 
 // SemanticModel talks to tableau-semantics-sdk via `ctx.semanticsClient
-// .semanticModels` (put/get/delete). The client is INJECTED through ctx (not
-// module-imported), so we mock the three methods on a fake client rather than
-// mocking a module — CRUD tests assert the single nested `put` body and the
-// get/delete behavior without touching an org.
+// .semanticModels` (create/get/delete). The client is INJECTED through ctx (not
+// module-imported), so we mock the methods on a fake client rather than mocking
+// a module — CRUD tests assert the single nested `create` body (the COLLECTION
+// POST verb; `put` is replace-only, live-verified v65) and the get/delete
+// behavior without touching an org.
 const semanticModels = {
+  create: vi.fn(),
   put: vi.fn(),
   get: vi.fn(),
   delete: vi.fn(),
@@ -50,14 +52,14 @@ function ctx(): ResourceContext {
   };
 }
 
-/** The single nested `put` body from the one create call. */
-function putBody(): Record<string, unknown> {
-  return semanticModels.put.mock.calls[0]![1] as Record<string, unknown>;
+/** The single nested body from the one `create` (collection POST) call. */
+function createBody(): Record<string, unknown> {
+  return semanticModels.create.mock.calls[0]![0] as Record<string, unknown>;
 }
 
-/** First element of a sub-collection array on the put body. */
-function putCollection(key: string): Record<string, unknown>[] {
-  return (putBody()[key] as Record<string, unknown>[]) ?? [];
+/** First element of a sub-collection array on the create body. */
+function createCollection(key: string): Record<string, unknown>[] {
+  return (createBody()[key] as Record<string, unknown>[]) ?? [];
 }
 
 describe("SemanticModel construct — source resolution", () => {
@@ -281,11 +283,11 @@ describe("SemanticModel construct — calculated dimensions", () => {
   });
 
   it("forwards the live-confirmed wire body — level 'Row', no agg fields, fixed scaffolding", async () => {
-    semanticModels.put.mockReset().mockResolvedValue({});
+    semanticModels.create.mockReset().mockResolvedValue({});
     semanticModels.get.mockReset().mockResolvedValue({ apiName: "Model" });
     const sm = buildWith({ apiName: "Bucket", expression: "IF [Fact.Id] = '1' THEN 'a' ELSE 'b' END" });
     await SemanticModelResource.create(ctx(), sm.props);
-    const body = putCollection("semanticCalculatedDimensions")[0]!;
+    const body = createCollection("semanticCalculatedDimensions")[0]!;
     expect(body).toEqual({
       apiName: "Bucket",
       label: "Bucket",
@@ -359,6 +361,59 @@ describe("SemanticModel construct — measure guards", () => {
                 },
               ],
               measures: [{ apiName: "Amt", dataObjectFieldName: "Amount__c", dataType: "Currency" }],
+            },
+          ],
+        }),
+    ).not.toThrow();
+  });
+});
+
+describe("SemanticModel construct — field apiName space guard", () => {
+  it("rejects a dimension apiName containing whitespace (opaque 500 otherwise)", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Account Name", dataObjectFieldName: "Name__c", dataType: "Text" }],
+            },
+          ],
+        }),
+    ).toThrow(/dimension "Account Name" apiName.*whitespace.*Account_Name/s);
+  });
+
+  it("rejects a measure apiName containing whitespace", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }],
+              measures: [{ apiName: "Total Amount", dataObjectFieldName: "Amount__c", dataType: "Number" }],
+            },
+          ],
+        }),
+    ).toThrow(/measure "Total Amount" apiName.*whitespace/s);
+  });
+
+  it("accepts space-free apiNames (display text lives in label)", () => {
+    const { stack, dmo } = stackWith();
+    expect(
+      () =>
+        new SemanticModel(stack, "Model", {
+          dataObjects: [
+            {
+              apiName: "Fact",
+              source: dmo,
+              dimensions: [
+                { apiName: "Account_Name", dataObjectFieldName: "Name__c", dataType: "Text", label: "Account Name" },
+              ],
             },
           ],
         }),
@@ -496,47 +551,50 @@ describe("SemanticModel construct — model joinType guard", () => {
   });
 });
 
-describe("SemanticModelResource.create — single-put semantics", () => {
+describe("SemanticModelResource.create — single-POST semantics", () => {
   beforeEach(() => {
+    semanticModels.create.mockReset();
     semanticModels.put.mockReset();
     semanticModels.get.mockReset();
     semanticModels.delete.mockReset();
   });
 
-  it("issues exactly ONE put (no per-sub-resource POSTs) then reads once — no rollback dance", async () => {
+  it("issues exactly ONE collection POST (no per-sub-resource POSTs, never put) then reads once — no rollback dance", async () => {
     const { stack, dmo } = stackWith();
     const sm = new SemanticModel(stack, "Model", {
       dataObjects: [
         { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
       ],
     });
-    semanticModels.put.mockResolvedValue({});
+    semanticModels.create.mockResolvedValue({});
     semanticModels.get.mockResolvedValue({ apiName: "Model" });
 
     await SemanticModelResource.create(ctx(), sm.props);
 
-    expect(semanticModels.put).toHaveBeenCalledTimes(1);
+    expect(semanticModels.create).toHaveBeenCalledTimes(1);
+    // create is the collection POST, NOT the replace-only put.
+    expect(semanticModels.put).not.toHaveBeenCalled();
     expect(semanticModels.get).toHaveBeenCalledTimes(1);
     // The old v64 flow rolled back by DELETE on partial failure; the single
-    // create-or-replace PUT has no partial sequence, so delete is never called.
+    // POST has no partial sequence, so delete is never called.
     expect(semanticModels.delete).not.toHaveBeenCalled();
   });
 
-  it("rethrows the original error when the put fails, and does NOT attempt a rollback delete", async () => {
+  it("rethrows the original error when the POST fails, and does NOT attempt a rollback delete", async () => {
     const { stack, dmo } = stackWith();
     const sm = new SemanticModel(stack, "Model", {
       dataObjects: [
         { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
       ],
     });
-    semanticModels.put.mockRejectedValue({ status: 400, body: { message: "original" } });
+    semanticModels.create.mockRejectedValue({ status: 400, body: { message: "original" } });
 
     await expect(SemanticModelResource.create(ctx(), sm.props)).rejects.toMatchObject({
       status: 400,
       body: { message: "original" },
     });
-    // A failed/partial create-or-replace is overwritten by the next deploy's
-    // PUT — create() must not fire a cleanup delete.
+    // A failed create leaves nothing on-org; the next deploy re-POSTs — create()
+    // must not fire a cleanup delete.
     expect(semanticModels.delete).not.toHaveBeenCalled();
   });
 });
@@ -593,6 +651,7 @@ describe("SemanticModel construct — reciprocal Mapping wiring", () => {
 
 describe("SemanticModelResource — CRUD wire calls", () => {
   beforeEach(() => {
+    semanticModels.create.mockReset();
     semanticModels.put.mockReset();
     semanticModels.get.mockReset();
     semanticModels.delete.mockReset();
@@ -623,15 +682,17 @@ describe("SemanticModelResource — CRUD wire calls", () => {
     return sm.props;
   }
 
-  it("collapses the whole model into ONE put (apiName + every sub-collection), then reads", async () => {
-    semanticModels.put.mockResolvedValue({});
+  it("collapses the whole model into ONE collection POST (apiName in the body + every sub-collection), then reads", async () => {
+    semanticModels.create.mockResolvedValue({});
     semanticModels.get.mockResolvedValue({ apiName: "Model", label: "Model", isQueryable: "Queryable" });
     const out = await SemanticModelResource.create(ctx(), resolvedProps());
     expect(out.apiName).toBe("Model");
 
-    expect(semanticModels.put).toHaveBeenCalledTimes(1);
-    const [apiName, body] = semanticModels.put.mock.calls[0]! as [string, Record<string, unknown>];
-    expect(apiName).toBe("Model");
+    expect(semanticModels.create).toHaveBeenCalledTimes(1);
+    // The collection POST takes the whole model as a single body arg (no apiName
+    // path param — apiName rides INSIDE the body).
+    const [body] = semanticModels.create.mock.calls[0]! as [Record<string, unknown>];
+    expect(body["apiName"]).toBe("Model");
     // The five v64 POST path segments are now camelCase array properties on the
     // single body — all present for a model that has each kind.
     expect(body).toHaveProperty("semanticDataObjects");
@@ -643,11 +704,11 @@ describe("SemanticModelResource — CRUD wire calls", () => {
     expect(semanticModels.get).toHaveBeenCalledWith("Model");
   });
 
-  it("sends the shell fields at the top level of the put body (sourceCreation + currency + agentEnabled)", async () => {
-    semanticModels.put.mockResolvedValue({});
+  it("sends the shell fields at the top level of the create body (sourceCreation + currency + agentEnabled)", async () => {
+    semanticModels.create.mockResolvedValue({});
     semanticModels.get.mockResolvedValue({ apiName: "Model" });
     await SemanticModelResource.create(ctx(), resolvedProps());
-    expect(putBody()).toMatchObject({
+    expect(createBody()).toMatchObject({
       apiName: "Model",
       dataspace: "default",
       sourceCreation: "DataCloud",
@@ -657,17 +718,17 @@ describe("SemanticModelResource — CRUD wire calls", () => {
     });
   });
 
-  it("omits empty sub-collections from the put body (relationships/calc fields absent when none authored)", async () => {
+  it("omits empty sub-collections from the create body (relationships/calc fields absent when none authored)", async () => {
     const { stack, dmo } = stackWith();
     const sm = new SemanticModel(stack, "Model", {
       dataObjects: [
         { apiName: "Fact", source: dmo, dimensions: [{ apiName: "Id", dataObjectFieldName: "Id__c", dataType: "Text" }] },
       ],
     });
-    semanticModels.put.mockResolvedValue({});
+    semanticModels.create.mockResolvedValue({});
     semanticModels.get.mockResolvedValue({ apiName: "Model" });
     await SemanticModelResource.create(ctx(), sm.props);
-    const body = putBody();
+    const body = createBody();
     expect(body).toHaveProperty("semanticDataObjects");
     expect(body).not.toHaveProperty("semanticRelationships");
     expect(body).not.toHaveProperty("semanticCalculatedMeasurements");
@@ -705,7 +766,7 @@ describe("SemanticModelResource — CRUD wire calls", () => {
 
 describe("SemanticModel construct — filters (pass-through)", () => {
   beforeEach(() => {
-    semanticModels.put.mockReset();
+    semanticModels.create.mockReset();
     semanticModels.get.mockReset();
   });
 
@@ -737,19 +798,20 @@ describe("SemanticModel construct — filters (pass-through)", () => {
   }
 
   /**
-   * Create the model via the single put and return the data-object and
-   * calculated-measurement ELEMENTS of the nested put body (the native home of
-   * their `filters`/`filterLogic` now that there are no per-sub-resource POSTs).
+   * Create the model via the single collection POST and return the data-object
+   * and calculated-measurement ELEMENTS of the nested create body (the native
+   * home of their `filters`/`filterLogic` now that there are no per-sub-resource
+   * POSTs).
    */
   async function createdBodies(
     props: unknown,
   ): Promise<{ dob: Record<string, unknown>; cm: Record<string, unknown> }> {
-    semanticModels.put.mockResolvedValue({});
+    semanticModels.create.mockResolvedValue({});
     semanticModels.get.mockResolvedValue({ apiName: "Model" });
     await SemanticModelResource.create(ctx(), props as never);
     return {
-      dob: putCollection("semanticDataObjects")[0]!,
-      cm: putCollection("semanticCalculatedMeasurements")[0]!,
+      dob: createCollection("semanticDataObjects")[0]!,
+      cm: createCollection("semanticCalculatedMeasurements")[0]!,
     };
   }
 
