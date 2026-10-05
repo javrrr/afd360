@@ -1,6 +1,6 @@
 {
   "name": "afd360",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Manifest-driven IaC for Salesforce Data Cloud / Agentforce Data 360 — declare connections, data streams, DMOs, mappings, search indexes, and Tableau Next semantic models, visualizations, and dashboards in TypeScript and deploy idempotently.",
   "type": "module",
   "main": "./dist/index.cjs",
