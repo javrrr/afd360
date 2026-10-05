@@ -554,6 +554,87 @@ as id; delete swallows 404 / 400 "was not found".
 
 ---
 
+## DataActionTarget
+
+Source: [`src/resources/data-action-target.ts`](../src/resources/data-action-target.ts)
+
+The **destination** a `DataAction` publishes to — a Platform Event (`Core`), a
+webhook, or a Marketing Cloud endpoint. Created FIRST and polled to `Active`
+before the action that references it (the proven create order is target-first).
+
+```ts
+const target = new DataActionTarget(stack, "InsightTarget", {
+  type: "Core",                          // default; also WebHook | Internal_WebHook | MarketingCloud
+  orgId: "${env.TARGET_ORG_ID}",         // Core: REQUIRED — the CRM org the Platform Event lands in
+  orgLabel: "${env.TARGET_ORG_LABEL}",   // Core: REQUIRED — the org's label
+  targetEndpoint: "AccountInsightIngested__e",  // the Platform Event api name
+});
+```
+
+Rides the `ctx.client.dataActionTargets` SDK service (full CRUD). `apiName` and
+`label` default to the construct id.
+
+- **A `Core` target REQUIRES `orgId` + `orgLabel`** — the construct throws at
+  synth time otherwise. These identify the CRM org whose Platform Event bus
+  receives the event; a Core target only provisions against a CRM-connected org
+  (on a Data-Cloud-only org it goes `Processing → Error`, which `isReady`
+  surfaces as a terminal failure rather than spinning).
+- **`targetEndpoint` is write-only** — the platform accepts it on create but
+  does NOT echo it back on read. It stays in the authored props + hash but is
+  excluded from the `matchesAuthored` adopt comparison (which would otherwise
+  always report drift). `type` is compared case-insensitively (`Core` ↔ `CORE`),
+  and `orgId` drift forces a recreate.
+- **No in-place update** (v1 delete-and-recreate). `isReady` waits for `Active`;
+  `isFailed` is `Error`.
+
+---
+
+## DataAction
+
+Source: [`src/resources/data-action.ts`](../src/resources/data-action.ts)
+
+A **data action** — fires on CDC change (`Create`/`Update`/`Delete`) to a source
+DMO and publishes selected fields to a `DataActionTarget`. The raw-REST
+Connect-API seam backs delete (the `ctx.client.dataActions` SDK service exposes
+only `list`/`create`, no get/delete), so read + adopt page the data-space-scoped
+list and match on `developerName`.
+
+```ts
+new DataAction(stack, "NotifyOnInsight", {
+  source: insightDmo,                    // DMO construct (wires dependsOn + its Mapping) OR a "…__dlm" dev name
+  sourceType: "DataModelEntity",         // default; also DataGraph (needs extra props, not modeled in v1)
+  subscriptions: ["Create", "Update"],   // default; CDC events to fire on
+  projectedFields: [                      // ≥1 required — fields carried onto the event
+    { fieldApiName: "AccountId__c" },     // fieldAliasName defaults to fieldApiName; objectApiName to the source DMO
+    { fieldApiName: "Score__c", fieldAliasName: "RiskScore__c" },
+  ],
+  condition: "Score__c != null",         // optional actionConditionExpression filter
+  target,                                 // DataActionTarget construct (wires dependsOn) OR an apiName string
+  // dataspace: "default",
+});
+```
+
+- **State id is composite** — `<dataspace>::<developerName>` — because the list
+  (read) and DELETE REST surfaces are both data-space-scoped (`?dataspace=…`).
+- **The create body is live-proven** (`dataActionSources` /
+  `dataActionProjectedFields` / `dataActionTargetNames`; `sourceType` is
+  `DataModelEntity` for a DMO, NOT `DataModelObject`; `dataspace` goes in BOTH
+  the `?dataspace=` query param and the body). Create retries the same
+  fact-table-not-ready / 5xx window as SearchIndex + CI — the projected fields
+  only exist once the source DMO's fact table has materialized.
+- **A `DataModelEntity` source must end in `__dlm`** (the full DMO name). Pass
+  a `DMO` construct to resolve it (and auto-wire `dependsOn`) automatically.
+- **Auto-wired dependencies:** the target (so it reaches `Active` first), the
+  source DMO, and any sibling `Mapping` whose target DMO is the source — both
+  authoring orders work (the `Mapping` constructor reciprocates via
+  `attachMappingToDataActions`).
+- **No in-place update** (v1 delete-and-recreate). `isReady` waits for `Active`;
+  a terminal `Error` (e.g. `CreateFailed` when the backing target can't
+  provision) is surfaced, not spun on. **Prune ordering:** `DataAction` tears
+  down before `DataActionTarget` and `DMO` (it references both).
+
+---
+
 ## Adopt vs. create vs. recreate
 
 When `afd360 deploy` processes a resource it picks one op per entry:

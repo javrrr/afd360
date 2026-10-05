@@ -121,6 +121,8 @@ Key facts to internalize:
 | `SemanticModel` | When the user wants a Tableau Next semantic model (dimensions / measures / relationships / calculated measurements) over DMOs or CalculatedInsight outputs — the layer a Tableau Next workbook or Agentforce agent queries. |
 | `Visualization` | When the user wants a Tableau Next chart/table rendered over a `SemanticModel`. Binds to the model via `dataSource`; lives in a pre-existing `workspace`. |
 | `Dashboard` | When the user wants a Tableau Next dashboard — a laid-out page of one or more `Visualization` tiles in a pre-existing `workspace`. Binds each tile to a `Visualization` by name. |
+| `DataActionTarget` | The destination a `DataAction` publishes to (Platform Event / webhook / Marketing Cloud). Required parent for `DataAction`; a `Core` target needs the destination CRM org's id + label. |
+| `DataAction` | When the user wants to fire on CDC changes to a DMO (Create/Update/Delete) and push selected fields to a target (e.g. a Platform Event). Pairs with a `DataActionTarget`. |
 
 `docs/resources.md` has the full prop reference for each. Read that
 when you need exact field names or shapes.
@@ -148,6 +150,7 @@ what you generate.
 | "I want a Tableau Next semantic model / dataset for BI or agents over my data" | Connection → DataStream → DMO → Mapping (→ CalculatedInsight if measures are aggregations), then SemanticModel |
 | "I want a Tableau Next chart / dashboard tile over my data" | …as above through SemanticModel, then Visualization (needs a pre-existing workspace id/name) |
 | "I want a Tableau Next dashboard / page of charts over my data" | …as above through Visualization (× N tiles), then Dashboard (binds the tiles by name; needs a pre-existing workspace id/name) |
+| "I want to react to / notify on / publish data changes (CDC) to a Platform Event, webhook, or MC" | …through DMO → Mapping, then DataActionTarget, then DataAction |
 | "I want to ingest data into Data Cloud" | Connection → DataStream (+ DMO + Mapping if user wants typed DMO surface) |
 | "I want to bring in my org's own CRM data (Account, custom objects, …)" | `Connection.salesforceHome` → DataStream (same-org CRM / Home; no creds) |
 | "I want to set up an X connection" (no further ask) | Connection only |
@@ -318,6 +321,54 @@ Key facts:
   that happens to hit a pre-existing stream is adopted not-owned automatically;
   reach for `fromExisting` when you specifically want to reference-and-map one
   the platform owns.)
+
+### Data Actions (DataActionTarget + DataAction)
+
+A data action fires on CDC change to a DMO and publishes selected fields to a
+target. These are NOT a `Connection`/`DataStream` pair — they sit downstream of
+a mapped DMO. Author the **target first**, then the action (the construct
+auto-wires `dependsOn` so the target provisions to `Active` before the action is
+created — the proven create order).
+
+```ts
+const target = new DataActionTarget(stack, "InsightTarget", {
+  type: "Core",                                  // Platform Event target (default)
+  orgId: "${env.TARGET_ORG_ID}",                 // Core: REQUIRED — destination CRM org id
+  orgLabel: "${env.TARGET_ORG_LABEL}",           // Core: REQUIRED — destination CRM org label
+  targetEndpoint: "AccountInsightIngested__e",   // the Platform Event api name
+});
+
+new DataAction(stack, "NotifyOnInsight", {
+  source: insightDmo,                            // DMO construct → resolves "…__dlm" + wires dependsOn + its Mapping
+  subscriptions: ["Create", "Update"],           // default
+  projectedFields: [                             // ≥1 required
+    { fieldApiName: "AccountId__c" },
+    { fieldApiName: "Score__c", fieldAliasName: "RiskScore__c" },
+  ],
+  condition: "Score__c != null",                 // optional
+  target,
+});
+```
+
+Non-obvious requirements:
+
+- **A `Core` target needs `orgId` + `orgLabel`** — the destination CRM org the
+  Platform Event lands in. The construct throws at synth time if either is
+  missing. ASK the user for these (and the Platform Event api name for
+  `targetEndpoint`) — the agent can't guess them. A Core target only provisions
+  against a **CRM-connected** org; on a Data-Cloud-only org it fails async
+  (`Processing → Error`), which afd360 surfaces as a terminal error.
+- **Pass the `DMO` construct as `source`**, not a string — it resolves the
+  `__dlm` name, wires `dependsOn`, and picks up the DMO's `Mapping` (the
+  projected fields only exist once the DMO is mapped + its fact table
+  materializes). A string source must be the full `…__dlm` dev name.
+- **`projectedFields` are the fields carried onto the event.** `fieldAliasName`
+  (the destination Platform Event field) defaults to `fieldApiName`. ASK which
+  fields the user wants published if it isn't obvious.
+- **No secrets** — a Core target carries no credentials (it rides the user's
+  `sf` session). Put `orgId`/`orgLabel`/`targetEndpoint` in `.env` if they vary
+  per environment, otherwise literals are fine (they're identifiers, not
+  secrets).
 
 ## Env-var conventions
 

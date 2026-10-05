@@ -96,3 +96,18 @@ export type {
   DashboardOutput,
   DashboardWidget,
 } from "./resources/dashboard.js";
+export { DataActionTarget } from "./resources/data-action-target.js";
+export type {
+  DataActionTargetProps,
+  DataActionTargetOutput,
+  DataActionTargetType,
+  DataActionTargetConfig,
+} from "./resources/data-action-target.js";
+export { DataAction } from "./resources/data-action.js";
+export type {
+  DataActionProps,
+  DataActionOutput,
+  DataActionSourceType,
+  DataActionProjectedField,
+  CdcSubscription,
+} from "./resources/data-action.js";

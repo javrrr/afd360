@@ -10,6 +10,7 @@ import { attachMappingToSearchIndexes } from "./search-index.js";
 import { attachMappingToRelationships } from "./relationship.js";
 import { attachMappingToCalculatedInsights } from "./calculated-insight.js";
 import { attachMappingToSemanticModels } from "./semantic-model.js";
+import { attachMappingToDataActions } from "./data-action.js";
 
 /**
  * A DLO-field → DMO-field pair. Platform uses `__c` suffix on both sides.
@@ -474,6 +475,11 @@ export class Mapping extends Construct {
     // FACT TABLE, which only materializes after this Mapping runs — so any
     // model referencing this Mapping's target DMO must deploy after it.
     attachMappingToSemanticModels(scope, this);
+    // Same reciprocal wiring for DataActions. A data action's projected fields
+    // reference the source DMO's fields, which only exist once this Mapping has
+    // run (and its fact table materializes) — so any DataAction sourcing from
+    // this Mapping's target DMO must deploy after it.
+    attachMappingToDataActions(scope, this);
   }
 
   /**

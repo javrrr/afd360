@@ -10,6 +10,8 @@ import { SearchIndexResource } from "./search-index.js";
 import { SemanticModelResource } from "./semantic-model.js";
 import { VisualizationResource } from "./visualization.js";
 import { DashboardResource } from "./dashboard.js";
+import { DataActionResource } from "./data-action.js";
+import { DataActionTargetResource } from "./data-action-target.js";
 
 /**
  * Static `resource.type` → `Resource` map.
@@ -41,6 +43,8 @@ export const RESOURCE_REGISTRY: Record<string, Resource<never, never>> = {
   SemanticModel: SemanticModelResource as Resource<never, never>,
   Visualization: VisualizationResource as Resource<never, never>,
   Dashboard: DashboardResource as Resource<never, never>,
+  DataAction: DataActionResource as Resource<never, never>,
+  DataActionTarget: DataActionTargetResource as Resource<never, never>,
 };
 
 /**
@@ -68,6 +72,11 @@ export const PRUNE_TYPE_PRIORITY: readonly string[] = [
   // torn down first.
   "SemanticModel",
   "CalculatedInsight",
+  // DataAction before DataActionTarget + DMO: the action references its target
+  // by name and projects fields off its source DMO, so it tears down before
+  // either. The target has no in-manifest dependents, so it follows the action.
+  "DataAction",
+  "DataActionTarget",
   "DMO",
   "DataStream",
   "ConnectionSchema",
