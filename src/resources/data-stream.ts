@@ -285,13 +285,12 @@ function buildIngestApiPayload(p: DataStreamResourceProps): unknown {
   // category:"Engagement" with no event-time field designated. Mirror the other
   // builders: pass eventDateTimeFieldName verbatim.
   //
-  // KNOWN UNVERIFIED FOLLOW-ON: IngestApi declares ONLY the PK in
-  // dataLakeFieldInputRepresentations (deriving the rest from the
-  // ConnectionSchema). It is possible the API cannot resolve an
-  // eventDateTimeFieldName that is not among the declared reps, in which case
-  // the event-time field would also need declaring here. Left out deliberately
-  // until a live deploy proves it needed (and reveals the exact name form) —
-  // see the Engagement-probe coordination with jbrain-ef.
+  // NOTE: IngestApi declares ONLY the PK in dataLakeFieldInputRepresentations
+  // (deriving the rest from the ConnectionSchema). A live deploy confirmed the
+  // branch below is sufficient on its own — the API resolves an
+  // eventDateTimeFieldName that is not among the declared reps, so the
+  // event-time field does NOT also need declaring here (the "<field>__c" name
+  // form is accepted verbatim).
   if (p.category === "Engagement") {
     if (!p.eventDateTimeFieldName) {
       throw new Error(
