@@ -267,6 +267,39 @@ function buildCreatePayload(p: DataStreamResourceProps): unknown {
 }
 
 function buildIngestApiPayload(p: DataStreamResourceProps): unknown {
+  const dlo: Record<string, unknown> = {
+    label: p.sourceObject,
+    // Convention: DLO dev name = <schemaObject>__dll, matching prior tooling.
+    name: `${p.sourceObject}__dll`,
+    category: p.category,
+    dataspaceInfo: [{ name: p.dataSpace }],
+    // Only the PK goes in dataLakeFieldInputRepresentations — the API
+    // derives the rest from the ConnectionSchema.
+    dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
+  };
+  // An Engagement DLO MUST name its event-time field (core's
+  // MktDataModelObjectHelper throws without one). Every other connector builder
+  // carries this branch (buildSalesforceHomePayload/AwsS3/Snowflake/BigQuery);
+  // IngestApi was the one path missing it, so an Engagement IngestApi stream
+  // 400'd "Illegal argument for data stream creation" — the DLO was sent
+  // category:"Engagement" with no event-time field designated. Mirror the other
+  // builders: pass eventDateTimeFieldName verbatim.
+  //
+  // KNOWN UNVERIFIED FOLLOW-ON: IngestApi declares ONLY the PK in
+  // dataLakeFieldInputRepresentations (deriving the rest from the
+  // ConnectionSchema). It is possible the API cannot resolve an
+  // eventDateTimeFieldName that is not among the declared reps, in which case
+  // the event-time field would also need declaring here. Left out deliberately
+  // until a live deploy proves it needed (and reveals the exact name form) —
+  // see the Engagement-probe coordination with jbrain-ef.
+  if (p.category === "Engagement") {
+    if (!p.eventDateTimeFieldName) {
+      throw new Error(
+        `DataStream "${p.name}": category=Engagement requires eventDateTimeFieldName.`,
+      );
+    }
+    dlo["eventDateTimeFieldName"] = p.eventDateTimeFieldName;
+  }
   return {
     name: p.name,
     label: p.label,
@@ -279,16 +312,7 @@ function buildIngestApiPayload(p: DataStreamResourceProps): unknown {
         events: [p.sourceObject],
       },
     },
-    dataLakeObjectInfo: {
-      label: p.sourceObject,
-      // Convention: DLO dev name = <schemaObject>__dll, matching prior tooling.
-      name: `${p.sourceObject}__dll`,
-      category: p.category,
-      dataspaceInfo: [{ name: p.dataSpace }],
-      // Only the PK goes in dataLakeFieldInputRepresentations — the API
-      // derives the rest from the ConnectionSchema.
-      dataLakeFieldInputRepresentations: [pkFieldRep(p.primaryKey)],
-    },
+    dataLakeObjectInfo: dlo,
     refreshConfig: { refreshMode: p.refreshMode },
   };
 }

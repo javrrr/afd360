@@ -276,6 +276,40 @@ describe("DataStream AwsS3 path", () => {
     expect((body["refreshConfig"] as Record<string, unknown>)["frequency"]).toEqual({ frequencyType: "None" });
   });
 
+  it("emits eventDateTimeFieldName on an Engagement IngestApi DLO (regression: builder dropped it)", async () => {
+    const app = new App();
+    const stack = new Stack(app, "Eng", { targetOrg: "dev-org" });
+    const conn = new Connection(stack, "Ingest", {
+      connectorType: "IngestApi",
+      label: "Ingest",
+      schema: {
+        name: "Feed",
+        label: "Feed",
+        fields: [
+          { name: "Id", dataType: "Text" },
+          { name: "CapturedAt", dataType: "DateTime" },
+        ],
+      },
+    });
+    const stream = new DataStream(stack, "EngStream", {
+      connection: conn,
+      sourceObject: "Feed",
+      category: "Engagement",
+      eventDateTimeFieldName: "CapturedAt__c",
+      refreshMode: "UPSERT",
+      primaryKey: { name: "Id", dataType: "Text" },
+    });
+    const ctx = mockCtx();
+    const create = (ctx.client.dataStreams as unknown as { create: ReturnType<typeof vi.fn> }).create;
+    create.mockResolvedValue({ name: "EngStream", recordId: "1ds" });
+    await DataStreamResource.create(ctx, { ...stream.props, connectionName: "Feed_resolved" });
+    const body = create.mock.calls[0]![0] as Record<string, unknown>;
+    const dlo = body["dataLakeObjectInfo"] as Record<string, unknown>;
+    expect(dlo["category"]).toBe("Engagement");
+    // The bug: this field was silently dropped for IngestApi, 400-ing the create.
+    expect(dlo["eventDateTimeFieldName"]).toBe("CapturedAt__c");
+  });
+
   it("requires eventDateTimeFieldName when category is Engagement", () => {
     const { stack, conn } = buildS3Fixture();
     expect(() => new DataStream(stack, "Bad", {
